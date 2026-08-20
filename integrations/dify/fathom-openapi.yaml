@@ -1,0 +1,104 @@
+openapi: 3.1.0
+info:
+  title: FATHOM Industrial Semantic Tools
+  version: 0.1.0
+  description: 供 Dify Workflow、Agent 和其他上层 AI 调用的受控工业语义工具。
+servers:
+  - url: http://host.docker.internal:8000/api/v1
+    description: Dify Docker 访问宿主机 FATHOM
+  - url: http://127.0.0.1:8000/api/v1
+    description: 非容器本机联调
+security:
+  - bearerAuth: []
+  - {}
+paths:
+  /semantics/assets:
+    get:
+      operationId: search_semantics
+      summary: 搜索工业对象、指标、关系、事件和权限定义
+      parameters:
+        - in: query
+          name: query
+          schema: { type: string }
+          description: 业务术语或对象名称
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        "200":
+          description: 语义资产列表
+          content:
+            application/json:
+              schema: { type: object }
+  /query/ask:
+    post:
+      operationId: ask_data
+      summary: 在 ONN 和 ABC 约束下查询、计算并返回证据
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string, description: 用户的业务问题 }
+                scope:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: 工厂、产线、组织等可信范围
+                semantic_version: { type: string }
+      responses:
+        "200":
+          description: 包含答案、ABC 计划、数据、证据、建议追问和 trace_id
+          content:
+            application/json:
+              schema: { type: object }
+  /ontology/instances/{object_id}/context:
+    get:
+      operationId: get_object_context
+      summary: 获取业务对象及其一跳关系上下文
+      parameters:
+        - in: path
+          name: object_id
+          required: true
+          schema: { type: string }
+          description: 已注册的业务对象唯一标识
+      responses:
+        "200":
+          description: 对象、属性、来源和关联对象
+          content:
+            application/json:
+              schema: { type: object }
+  /agent-mesh/runs:
+    post:
+      operationId: run_controlled_agent_flow
+      summary: 执行内置的受控智能体链路
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [flow_key]
+              properties:
+                flow_key:
+                  type: string
+                  enum: [trusted_qa, guided_onboarding, adaptive_diagnosis]
+                question: { type: string }
+                source_key: { type: string }
+                scope:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        "200":
+          description: 包含步骤回执、trace 和受控输出的运行结果
+          content:
+            application/json:
+              schema: { type: object }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: FATHOM token

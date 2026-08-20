@@ -1,0 +1,38 @@
+app_name: "渊渟 FATHOM"
+environment: development
+storage_profile: lite
+database_url: "sqlite:///./data/fathom.db"
+semantic_directory: "./semantic"
+enable_duckdb: true
+enable_vector_search: false
+duckdb_memory_limit: "512MB"
+duckdb_threads: 2
+auth_enabled: false
+
+# 生产环境建议开启。token_hash 可用 `fathom token-hash <token>` 生成。
+# 原始令牌不写入配置文件。
+auth_principals: {}
+# auth_principals:
+#   factory_agent:
+#     role: viewer
+#     token_hash: "sha256-hex"
+
+# 模型配置可以由管理员在 Web 页面维护，也可以在此预置。
+# 优先级：FATHOM_* 环境变量 > 本文件 > Web 持久化 > 系统默认值。
+model_gateway:
+  providers:
+    - key: local_openai_compatible
+      name: 本地兼容模型
+      provider_type: openai_compatible
+      base_url: http://127.0.0.1:8001/v1
+      api_mode: auto
+      default_model: local-model
+      secret_reference: env://FATHOM_LOCAL_MODEL_API_KEY
+      enabled: false
+      parameters:
+        temperature: 0.1
+        max_output_tokens: 2048
+  routes:
+    planner: local_openai_compatible
+    semantic_extractor: local_openai_compatible
+    explainer: local_openai_compatible

@@ -1,0 +1,137 @@
+name: manufacturing_execution
+label: 制造执行语义域
+version: 0.1.0
+domain: manufacturing.execution
+owner: production-excellence
+assets:
+  - key: plant
+    kind: object
+    label: 工厂
+    description: 制造业务和空间的顶层运营单元
+    domain: manufacturing.execution
+    owner: production-excellence
+    aliases: [厂区, 基地]
+  - key: production_line
+    kind: object
+    label: 生产线
+    description: 由设备、工位和人员共同完成生产任务的对象
+    domain: manufacturing.execution
+    owner: production-excellence
+    aliases: [产线, 线体, 一号线, 1号线]
+  - key: equipment
+    kind: object
+    label: 设备
+    description: 可监测、维护并参与生产过程的物理资产
+    domain: manufacturing.execution
+    owner: equipment-management
+    aliases: [机台, 机器]
+  - key: work_order
+    kind: object
+    label: 生产工单
+    description: MES 下达的制造任务
+    domain: manufacturing.execution
+    owner: production-planning
+    aliases: [工单, 制令单]
+  - key: contains_equipment
+    kind: relation
+    label: 包含设备
+    description: 生产线在有效时间内包含设备
+    domain: manufacturing.execution
+    owner: equipment-management
+    aliases: [包含, 所属]
+  - key: line_code
+    kind: attribute
+    label: 产线编码
+    description: 生产线在企业内的稳定标识
+    domain: manufacturing.execution
+    owner: production-excellence
+    aliases: [线体编码]
+  - key: order_fulfillment_rate
+    kind: metric
+    label: 订单达成率
+    description: 实际完成数量相对于计划数量的比例
+    domain: manufacturing.execution
+    owner: production-planning
+    aliases: [达成率, 计划达成率, fulfillment]
+    source: metric_observations
+    unit: "%"
+    dimensions: [production_line, day, shift]
+    expression: "actual_output / planned_output * 100"
+  - key: oee
+    kind: metric
+    label: OEE
+    description: 设备综合效率
+    domain: manufacturing.execution
+    owner: equipment-management
+    aliases: [设备综合效率, 综合效率]
+    source: metric_observations
+    unit: "%"
+    dimensions: [production_line, day, shift]
+    expression: "availability * performance * quality"
+  - key: downtime_minutes
+    kind: metric
+    label: 停机时长
+    description: 统计范围内设备处于停机状态的分钟数
+    domain: manufacturing.execution
+    owner: equipment-management
+    aliases: [停机时间, 停线时长]
+    source: metric_observations
+    unit: 分钟
+    dimensions: [production_line, equipment, day]
+    expression: "sum(event.duration_minutes)"
+  - key: actual_output
+    kind: metric
+    label: 实际产量
+    description: 统计范围内已完成的合格及待检数量
+    domain: manufacturing.execution
+    owner: production-planning
+    aliases: [产量, 完成量]
+    source: metric_observations
+    unit: 件
+    dimensions: [production_line, day, shift]
+    expression: "sum(actual_quantity)"
+  - key: planned_output
+    kind: metric
+    label: 计划产量
+    description: 排产计划要求完成的数量
+    domain: manufacturing.execution
+    owner: production-planning
+    aliases: [计划量]
+    source: metric_observations
+    unit: 件
+    dimensions: [production_line, day, shift]
+    expression: "sum(planned_quantity)"
+  - key: equipment_downtime
+    kind: event
+    label: 设备停机事件
+    description: 带开始时间、持续时间、原因和设备上下文的事件
+    domain: manufacturing.execution
+    owner: equipment-management
+    aliases: [停机, 停线, 故障停机]
+    source: events
+  - key: manufacturing_read
+    kind: policy
+    label: 制造数据只读策略
+    description: 按工厂、产线和指标授权只读查询
+    domain: manufacturing.execution
+    owner: data-governance
+    aliases: [数据权限, 查询权限]
+relations:
+  - key: plant_contains_line
+    label: 工厂包含产线
+    source_object: plant
+    target_object: production_line
+    cardinality: one_to_many
+    description: 工厂与生产线的有效期关系
+  - key: line_contains_equipment
+    label: 产线包含设备
+    source_object: production_line
+    target_object: equipment
+    cardinality: one_to_many
+    description: 生产线与设备的有效期关系
+  - key: work_order_runs_on_line
+    label: 工单运行于产线
+    source_object: work_order
+    target_object: production_line
+    cardinality: many_to_one
+    description: 工单执行产线关系

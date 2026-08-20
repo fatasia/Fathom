@@ -1,0 +1,25 @@
+app_name: "渊渟 FATHOM"
+environment: production
+storage_profile: lite
+database_url: "sqlite:///./data/fathom.db"
+semantic_directory: "./semantic"
+backup_directory: "./data/backups"
+enable_duckdb: true
+enable_vector_search: false
+duckdb_memory_limit: "512MB"
+duckdb_threads: 2
+
+auth_enabled: true
+auth_principals:
+  platform_admin:
+    role: admin
+    token_hash: "REPLACE_WITH_SHA256_HEX"
+    object_scope: "*"
+  question_agent:
+    role: viewer
+    token_hash: "REPLACE_WITH_SHA256_HEX"
+    object_scope: ["line_01"]
+
+model_gateway:
+  providers: []
+  routes: {}
