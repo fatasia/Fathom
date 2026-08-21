@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import duckdb
 import sqlglot
-from fathom.adapters.storage.database import DataSourceRecord
+from fathom.adapters.storage.database import (
+    DataSourceRecord,
+    PipelineRecord,
+    PipelineRunRecord,
+)
 from fathom.domains.pipelines.models import PipelineDefinition
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlglot import exp
 
@@ -16,6 +23,58 @@ class PipelineService:
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
+
+    def list(self) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            records = session.scalars(select(PipelineRecord).order_by(PipelineRecord.key)).all()
+            return [self._serialize(record) for record in records]
+
+    def save(self, definition: PipelineDefinition, published: bool = False) -> dict[str, Any]:
+        with self._session_factory() as session:
+            record = session.get(PipelineRecord, definition.key)
+            values = {
+                **definition.model_dump(mode="json"),
+                "published": published,
+                "updated_at": datetime.now(UTC),
+            }
+            if record is None:
+                record = PipelineRecord(**values)
+                session.add(record)
+            else:
+                for key, value in values.items():
+                    setattr(record, key, value)
+            session.commit()
+            session.refresh(record)
+            return self._serialize(record)
+
+    def delete(self, pipeline_key: str) -> None:
+        with self._session_factory() as session:
+            record = session.get(PipelineRecord, pipeline_key)
+            if record is None:
+                raise LookupError(pipeline_key)
+            session.delete(record)
+            session.commit()
+
+    def runs(self, pipeline_key: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 200)
+        with self._session_factory() as session:
+            query = select(PipelineRunRecord)
+            if pipeline_key:
+                query = query.where(PipelineRunRecord.pipeline_key == pipeline_key)
+            records = session.scalars(
+                query.order_by(PipelineRunRecord.started_at.desc()).limit(limit)
+            ).all()
+            return [
+                {
+                    "run_id": record.run_id,
+                    "pipeline_key": record.pipeline_key,
+                    "status": record.status,
+                    "started_at": record.started_at.isoformat(),
+                    "finished_at": record.finished_at.isoformat(),
+                    "result": record.result,
+                }
+                for record in records
+            ]
 
     def preview(self, definition: PipelineDefinition, limit: int = 100) -> dict[str, Any]:
         if definition.mode != "preview":
@@ -79,7 +138,8 @@ class PipelineService:
         finally:
             connection.close()
 
-        return {
+        result = {
+            "run_id": f"pipe_{uuid4().hex[:16]}",
             "key": definition.key,
             "status": "passed" if all(item["passed"] for item in quality) else "failed",
             "source": definition.source,
@@ -91,6 +151,34 @@ class PipelineService:
             "onn_mappings": mappings,
             "sql": query,
             "limits": {"rows": limit, "memory": "256MB", "threads": 2},
+        }
+        now = datetime.now(UTC)
+        with self._session_factory() as session:
+            session.add(
+                PipelineRunRecord(
+                    run_id=result["run_id"],
+                    pipeline_key=definition.key,
+                    status=result["status"],
+                    started_at=now,
+                    finished_at=now,
+                    result=result,
+                )
+            )
+            session.commit()
+        return result
+
+    @staticmethod
+    def _serialize(record: PipelineRecord) -> dict[str, Any]:
+        return {
+            "key": record.key,
+            "label": record.label,
+            "source": record.source,
+            "target": record.target,
+            "mode": record.mode,
+            "cursor_field": record.cursor_field,
+            "steps": record.steps,
+            "published": record.published,
+            "updated_at": record.updated_at.isoformat(),
         }
 
     def _source(self, key: str) -> DataSourceRecord:

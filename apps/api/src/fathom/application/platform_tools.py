@@ -17,11 +17,12 @@ from fathom.adapters.storage.database import (
     MetricObservationRecord,
     ObjectInstanceRecord,
     SqlTemplateRecord,
+    SqlTemplateVersionRecord,
 )
 from fathom.config import Settings
 from fathom.domains.semantics.models import DomainContract
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlglot import exp
 
@@ -34,6 +35,11 @@ class SqlTemplateInput(BaseModel):
     sql_text: str = Field(min_length=8)
     parameters: list[str] = Field(default_factory=list)
     published: bool = False
+
+
+class SqlPreviewRequest(BaseModel):
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    limit: int = Field(default=100, ge=1, le=500)
 
 
 class RestoreRequest(BaseModel):
@@ -70,9 +76,101 @@ class SqlTemplateService:
             else:
                 for key, value in values.items():
                     setattr(record, key, value)
+            session.flush()
+            version = (
+                session.scalar(
+                    select(func.max(SqlTemplateVersionRecord.version)).where(
+                        SqlTemplateVersionRecord.template_key == payload.key
+                    )
+                )
+                or 0
+            ) + 1
+            session.add(
+                SqlTemplateVersionRecord(
+                    template_key=payload.key,
+                    version=version,
+                    snapshot=self._serialize(record),
+                    created_at=datetime.now(UTC),
+                )
+            )
             session.commit()
             session.refresh(record)
             return self._serialize(record)
+
+    def versions(self, template_key: str) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            records = session.scalars(
+                select(SqlTemplateVersionRecord)
+                .where(SqlTemplateVersionRecord.template_key == template_key)
+                .order_by(SqlTemplateVersionRecord.version.desc())
+            ).all()
+            return [
+                {
+                    "version": record.version,
+                    "created_at": record.created_at.isoformat(),
+                    "snapshot": record.snapshot,
+                }
+                for record in records
+            ]
+
+    def restore_version(self, template_key: str, version: int) -> dict[str, Any]:
+        with self._session_factory() as session:
+            record = session.scalar(
+                select(SqlTemplateVersionRecord).where(
+                    SqlTemplateVersionRecord.template_key == template_key,
+                    SqlTemplateVersionRecord.version == version,
+                )
+            )
+            if record is None:
+                raise LookupError(f"{template_key}@{version}")
+            payload = SqlTemplateInput.model_validate(record.snapshot)
+        return self.save(payload)
+
+    def delete(self, template_key: str) -> None:
+        with self._session_factory() as session:
+            record = session.get(SqlTemplateRecord, template_key)
+            if record is None:
+                raise LookupError(template_key)
+            session.delete(record)
+            session.execute(
+                delete(SqlTemplateVersionRecord).where(
+                    SqlTemplateVersionRecord.template_key == template_key
+                )
+            )
+            session.commit()
+
+    def preview(
+        self,
+        template_key: str,
+        parameters: dict[str, Any],
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        limit = min(max(limit, 1), 500)
+        with self._session_factory() as session:
+            record = session.get(SqlTemplateRecord, template_key)
+            if record is None:
+                raise LookupError(template_key)
+            validation = self.validate(record.sql_text, record.dialect, record.parameters)
+            if not validation["safe"]:
+                raise ValueError("; ".join(validation["errors"]))
+            missing = [name for name in record.parameters if name not in parameters]
+            if missing:
+                raise ValueError(f"缺少参数：{', '.join(missing)}")
+            if record.dialect != "sqlite":
+                raise ValueError("内置预览当前执行 SQLite 模板；其他方言由对应数据源连接器执行")
+            sql = record.sql_text.strip().rstrip(";")
+            statement = text(f"SELECT * FROM ({sql}) AS __fathom_preview LIMIT :__fathom_limit")
+            result = session.execute(statement, {**parameters, "__fathom_limit": limit})
+            columns = list(result.keys())
+            rows = [dict(row._mapping) for row in result.fetchall()]
+            return {
+                "template_key": template_key,
+                "columns": columns,
+                "rows": rows,
+                "row_count": len(rows),
+                "limit": limit,
+                "executed_at": datetime.now(UTC).isoformat(),
+            }
 
     @staticmethod
     def validate(sql_text: str, dialect: str, parameters: list[str]) -> dict[str, Any]:

@@ -19,14 +19,14 @@ async function main() {
 
   await page.goto('http://127.0.0.1:8000', { waitUntil: 'networkidle' })
   await page.screenshot({ path: path.join(outputDirectory, '01-ask.png'), fullPage: true })
-  await page.getByRole('button', { name: '一号线昨天 OEE 怎么样？', exact: true }).click()
-  await page.getByText('结果已校验', { exact: true }).waitFor()
-  await page.getByRole('button', { name: /查看证据/ }).click()
+  await page.getByRole('button', { name: '昨天的 OEE 是多少？', exact: true }).click()
+  await page.getByText('暂无真实数据', { exact: true }).waitFor()
   await page.getByRole('button', { name: '查看计算过程', exact: true }).click()
   await page.screenshot({ path: path.join(outputDirectory, '01b-ask-result.png'), fullPage: true })
 
   const primaryScreens = [
     ['业务知识', '02-ontology.png'],
+    ['知识库', '02b-knowledge.png'],
     ['数据接入', '05-connections.png'],
   ]
   for (const [label, filename] of primaryScreens) {
@@ -110,7 +110,7 @@ async function main() {
   if (mobileLayout.documentWidth > mobileLayout.viewport + 1) {
     throw new Error(`Mobile horizontal overflow: ${JSON.stringify(mobileLayout)}`)
   }
-  process.stdout.write(JSON.stringify({ ok: true, layout, mobileLayout, screenshots: 13 }, null, 2))
+  process.stdout.write(JSON.stringify({ ok: true, layout, mobileLayout, screenshots: 14 }, null, 2))
 }
 
 main().catch((error) => {

@@ -21,6 +21,8 @@ import {
   Link2,
   Menu,
   Network,
+  Play,
+  Plus,
   Search,
   Send,
   Save,
@@ -29,6 +31,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   UploadCloud,
+  Trash2,
   Waves,
   Wrench,
   Workflow,
@@ -39,33 +42,50 @@ import { computed, onMounted, ref } from 'vue'
 import {
   askData,
   createBackup,
+  deleteSqlTemplate,
   fetchBackups,
   fetchAgentMesh,
   fetchConnectorTypes,
   fetchDataSources,
   fetchDifyIntegrationStatus,
   fetchLatestEvaluation,
+  fetchKnowledgeBases,
+  fetchKnowledgeDocuments,
   fetchModelGateway,
   fetchObjectInstances,
+  fetchPipelines,
+  fetchPythonExtensions,
+  fetchPythonExtensionRuns,
   fetchSemanticOverview,
   fetchSemanticChanges,
   fetchSqlTemplates,
+  fetchSqlTemplateVersions,
   previewImport,
+  previewSqlTemplate,
   importSemantics,
   inspectImage,
   previewPipeline,
   proposeSemanticAsset,
   saveDataSource,
+  saveKnowledgeBase,
   saveModelProvider,
   saveModelRoute,
+  savePipeline,
+  savePythonExtension,
   saveSqlTemplate,
   runAgentFlow,
+  runPythonExtension,
   runCertifiedEvaluation,
   decideSemanticChange,
   testDataSource,
+  testKnowledgeBase,
+  uploadKnowledgeDocument,
+  deleteKnowledgeDocument,
+  searchKnowledge,
   restoreBackup,
   probeModelProvider,
   validateSqlTemplate,
+  validatePythonExtension,
 } from './api'
 import type {
   AskResult,
@@ -78,17 +98,25 @@ import type {
   DifyIntegrationStatus,
   EffectiveConfiguration,
   EvaluationReport,
+  KnowledgeBase,
+  KnowledgeDocument,
+  KnowledgeHit,
   ModelProvider,
   ModelProviderPreset,
   ModelRoute,
   ObjectInstance,
   PipelinePreview,
+  PythonExtension,
+  PythonExtensionRun,
   SemanticOverview,
   SemanticChange,
   SqlTemplate,
+  SqlTemplateVersion,
+  SqlPreview,
+  StoredPipeline,
 } from './types'
 
-type Workspace = 'ask' | 'ontology' | 'metrics' | 'agents' | 'connections' | 'studio' | 'governance' | 'settings'
+type Workspace = 'ask' | 'ontology' | 'knowledge' | 'metrics' | 'agents' | 'connections' | 'studio' | 'governance' | 'settings'
 
 const workspace = ref<Workspace>('ask')
 const question = ref('')
@@ -111,6 +139,14 @@ const sqlTemplates = ref<SqlTemplate[]>([])
 const backups = ref<BackupItem[]>([])
 const connectorTypes = ref<ConnectorType[]>([])
 const dataSources = ref<DataSource[]>([])
+const knowledgeBases = ref<KnowledgeBase[]>([])
+const knowledgeDocuments = ref<KnowledgeDocument[]>([])
+const selectedKnowledgeBase = ref<KnowledgeBase | null>(null)
+const knowledgeConfigurationText = ref('{}')
+const knowledgeMessage = ref('')
+const knowledgeSearchQuery = ref('')
+const knowledgeHits = ref<KnowledgeHit[]>([])
+const knowledgeBusy = ref(false)
 const difyIntegration = ref<DifyIntegrationStatus | null>(null)
 const integrationMessage = ref('')
 const modelProviders = ref<ModelProvider[]>([])
@@ -140,7 +176,6 @@ const modelPanelOpen = ref(false)
 const modelMessage = ref('')
 const conversationHistory = ref<Array<{ question: string; answer: string; traceId: string }>>([])
 const objectInstances = ref<ObjectInstance[]>([])
-const selectedObjectId = ref('')
 const visionAnalysis = ref<{
   analysis: string
   object_id: string
@@ -149,17 +184,41 @@ const visionAnalysis = ref<{
 } | null>(null)
 const visionLoading = ref(false)
 const selectedTemplate = ref<SqlTemplate | null>(null)
+const sqlTemplateVersions = ref<SqlTemplateVersion[]>([])
+const sqlParametersText = ref('{}')
+const sqlPreview = ref<SqlPreview | null>(null)
+const activeStudioTool = ref<'sql' | 'pipeline' | 'python' | 'transfer'>('sql')
 const importResult = ref<Record<string, unknown> | null>(null)
 const importedSemanticContent = ref('')
 const toolMessage = ref('')
 const pipelinePanelOpen = ref(false)
 const pipelineRunning = ref(false)
 const pipelineResult = ref<PipelinePreview | null>(null)
+const storedPipelines = ref<StoredPipeline[]>([])
+const pipelineKey = ref('pipeline.new_flow')
+const pipelineLabel = ref('新数据管道')
 const pipelineSource = ref('')
 const pipelineStepsText = ref(`[
   { "operation": "quality_check", "configuration": { "column": "id", "rule": "not_null" } },
   { "operation": "onn_map", "configuration": { "object": "business_object", "identity": "id" } }
 ]`)
+const pythonExtensions = ref<PythonExtension[]>([])
+const pythonRuns = ref<PythonExtensionRun[]>([])
+const selectedPythonExtension = ref<PythonExtension>({
+  key: 'extension.normalize',
+  label: '数据归一化',
+  version: 1,
+  code: `def transform(input_data):
+    value = float(input_data.get("value", 0))
+    return {"normalized": round(value / 100, 4)}`,
+  timeout_seconds: 10,
+  memory_mb: 256,
+  published: false,
+  updated_at: '',
+})
+const pythonInputText = ref('{"value": 82.5}')
+const pythonRun = ref<PythonExtensionRun | null>(null)
+const pythonRunning = ref(false)
 const connectionPanelOpen = ref(false)
 const showAllConnectors = ref(false)
 const builderOpen = ref(false)
@@ -206,6 +265,7 @@ const kindMeta: Record<AssetKind, { label: string; short: string }> = {
 const primaryNavItems: Array<{ key: Workspace; label: string; icon: typeof Sparkles }> = [
   { key: 'ask', label: '问数', icon: Sparkles },
   { key: 'ontology', label: '业务知识', icon: Network },
+  { key: 'knowledge', label: '知识库', icon: BookOpen },
   { key: 'connections', label: '数据接入', icon: Cable },
 ]
 
@@ -323,13 +383,15 @@ async function loadAgentMesh() {
 }
 
 async function loadPlatformData() {
-  const [templates, backupItems, types, sources, objects, dify] = await Promise.all([
+  const [templates, backupItems, types, sources, objects, dify, pipelines, extensions] = await Promise.all([
     fetchSqlTemplates(),
     fetchBackups(),
     fetchConnectorTypes(),
     fetchDataSources(),
     fetchObjectInstances(),
     fetchDifyIntegrationStatus(),
+    fetchPipelines(),
+    fetchPythonExtensions(),
   ])
   sqlTemplates.value = templates
   backups.value = backupItems
@@ -337,10 +399,137 @@ async function loadPlatformData() {
   dataSources.value = sources
   objectInstances.value = objects
   difyIntegration.value = dify
-  if (selectedObjectId.value && !objects.some((item) => item.object_id === selectedObjectId.value)) {
-    selectedObjectId.value = ''
-  }
+  storedPipelines.value = pipelines
+  pythonExtensions.value = extensions
   selectedTemplate.value ??= templates[0] ? { ...templates[0] } : null
+  if (selectedTemplate.value) {
+    sqlTemplateVersions.value = await fetchSqlTemplateVersions(selectedTemplate.value.key)
+  }
+  if (extensions.length && !extensions.some((item) => item.key === selectedPythonExtension.value.key)) {
+    selectedPythonExtension.value = { ...extensions[0] }
+  }
+  pythonRuns.value = await fetchPythonExtensionRuns(selectedPythonExtension.value.key)
+}
+
+async function loadKnowledgeBases() {
+  knowledgeBases.value = await fetchKnowledgeBases()
+  if (!selectedKnowledgeBase.value && knowledgeBases.value.length) {
+    await selectKnowledgeBase(knowledgeBases.value[0])
+  } else if (selectedKnowledgeBase.value) {
+    const refreshed = knowledgeBases.value.find(
+      (item) => item.key === selectedKnowledgeBase.value?.key,
+    )
+    if (refreshed) await selectKnowledgeBase(refreshed)
+  }
+}
+
+async function selectKnowledgeBase(item: KnowledgeBase) {
+  selectedKnowledgeBase.value = {
+    ...item,
+    configuration: { ...item.configuration },
+  }
+  knowledgeConfigurationText.value = JSON.stringify(item.configuration, null, 2)
+  knowledgeHits.value = []
+  knowledgeDocuments.value = item.kind === 'internal'
+    ? await fetchKnowledgeDocuments(item.key)
+    : []
+}
+
+function createKnowledgeBase(kind: 'internal' | 'external') {
+  const timestamp = Date.now()
+  selectedKnowledgeBase.value = {
+    key: `knowledge.${kind}_${timestamp}`,
+    name: kind === 'internal' ? '新内置知识库' : '新外接知识库',
+    kind,
+    configuration: kind === 'external'
+      ? { endpoint: 'https://knowledge.example.com/search', method: 'POST', items_path: 'items' }
+      : {},
+    secret_reference: '',
+    enabled: true,
+    document_count: 0,
+    updated_at: '',
+  }
+  knowledgeConfigurationText.value = JSON.stringify(
+    selectedKnowledgeBase.value.configuration,
+    null,
+    2,
+  )
+  knowledgeDocuments.value = []
+  knowledgeMessage.value = '填写名称和配置后保存。密钥请使用 env://VARIABLE。'
+}
+
+async function persistKnowledgeBase() {
+  if (!selectedKnowledgeBase.value) return
+  knowledgeBusy.value = true
+  try {
+    selectedKnowledgeBase.value.configuration = JSON.parse(
+      knowledgeConfigurationText.value || '{}',
+    ) as Record<string, unknown>
+    const saved = await saveKnowledgeBase(selectedKnowledgeBase.value)
+    knowledgeMessage.value = `“${saved.name}”已保存`
+    await loadKnowledgeBases()
+  } catch (saveError) {
+    knowledgeMessage.value = saveError instanceof Error ? saveError.message : '知识库保存失败'
+  } finally {
+    knowledgeBusy.value = false
+  }
+}
+
+async function verifyKnowledgeBase() {
+  if (!selectedKnowledgeBase.value) return
+  knowledgeBusy.value = true
+  try {
+    const result = await testKnowledgeBase(selectedKnowledgeBase.value.key)
+    knowledgeMessage.value = result.message
+  } catch (testError) {
+    knowledgeMessage.value = testError instanceof Error ? testError.message : '知识库测试失败'
+  } finally {
+    knowledgeBusy.value = false
+  }
+}
+
+async function handleKnowledgeUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file || !selectedKnowledgeBase.value) return
+  knowledgeBusy.value = true
+  try {
+    await uploadKnowledgeDocument(selectedKnowledgeBase.value.key, file)
+    knowledgeDocuments.value = await fetchKnowledgeDocuments(selectedKnowledgeBase.value.key)
+    knowledgeMessage.value = `${file.name} 已切分入库，可立即在问数页检索`
+    await loadKnowledgeBases()
+  } catch (uploadError) {
+    knowledgeMessage.value = uploadError instanceof Error ? uploadError.message : '文档导入失败'
+  } finally {
+    input.value = ''
+    knowledgeBusy.value = false
+  }
+}
+
+async function removeKnowledgeDocument(document: KnowledgeDocument) {
+  if (!selectedKnowledgeBase.value) return
+  await deleteKnowledgeDocument(selectedKnowledgeBase.value.key, document.document_id)
+  knowledgeDocuments.value = knowledgeDocuments.value.filter(
+    (item) => item.document_id !== document.document_id,
+  )
+  knowledgeMessage.value = `已删除“${document.title}”`
+  await loadKnowledgeBases()
+}
+
+async function runKnowledgeSearch() {
+  if (!knowledgeSearchQuery.value.trim()) return
+  knowledgeBusy.value = true
+  try {
+    const result = await searchKnowledge(knowledgeSearchQuery.value)
+    knowledgeHits.value = result.items
+    knowledgeMessage.value = result.warnings.length
+      ? `检索完成；${result.warnings.join('；')}`
+      : `检索完成，返回 ${result.items.length} 条可引用结果`
+  } catch (searchError) {
+    knowledgeMessage.value = searchError instanceof Error ? searchError.message : '检索失败'
+  } finally {
+    knowledgeBusy.value = false
+  }
 }
 
 async function loadModelGateway() {
@@ -467,7 +656,7 @@ async function submitQuestion(nextQuestion?: string) {
   evidenceOpen.value = false
   executionOpen.value = false
   try {
-    result.value = await askData(content, selectedObjectId.value)
+    result.value = await askData(content)
     conversationHistory.value.push({
       question: content,
       answer: result.value.answer,
@@ -488,9 +677,18 @@ async function handleVisionUpload(event: Event) {
   visionAnalysis.value = null
   error.value = ''
   try {
+    const plannedObjectId = result.value?.plan.anchors.find(
+      (anchor) => anchor.kind === 'object',
+    )?.key
+    const objectId = plannedObjectId || (objectInstances.value.length === 1
+      ? objectInstances.value[0].object_id
+      : '')
+    if (!objectId) {
+      throw new Error('请先问一句包含设备或产线的问题，系统识别对象后即可附图分析。')
+    }
     visionAnalysis.value = await inspectImage(
       file,
-      selectedObjectId.value || 'line_01',
+      objectId,
       `${question.value}\n请将可见信息与业务对象关联，并区分事实、推断和不确定项。`,
     )
   } catch (visionError) {
@@ -562,6 +760,7 @@ function switchWorkspace(next: Workspace) {
   workspace.value = next
   mobileNavOpen.value = false
   if (next === 'studio' || next === 'connections') void loadPlatformData()
+  if (next === 'knowledge') void loadKnowledgeBases()
   if (next === 'agents') void loadAgentMesh()
   if (next === 'settings') void loadModelGateway()
   if (next === 'governance') void loadEvaluation()
@@ -681,14 +880,144 @@ async function applySemanticImport() {
 async function checkTemplate() {
   if (!selectedTemplate.value) return
   const validation = await validateSqlTemplate(selectedTemplate.value)
-  toolMessage.value = validation.safe ? 'SQL 模板安全校验通过。' : String(validation.errors)
+  if (validation.safe && typeof validation.normalized_sql === 'string') {
+    selectedTemplate.value.sql_text = validation.normalized_sql
+  }
+  toolMessage.value = validation.safe ? 'SQL 已格式化，安全校验通过。' : String(validation.errors)
 }
 
 async function persistTemplate() {
   if (!selectedTemplate.value) return
   selectedTemplate.value = await saveSqlTemplate(selectedTemplate.value)
-  await loadPlatformData()
+  sqlTemplates.value = [
+    ...sqlTemplates.value.filter((item) => item.key !== selectedTemplate.value?.key),
+    selectedTemplate.value,
+  ].sort((left, right) => left.key.localeCompare(right.key))
+  sqlTemplateVersions.value = await fetchSqlTemplateVersions(selectedTemplate.value.key)
   toolMessage.value = 'SQL 模板已保存并记录版本时间。'
+}
+
+async function selectSqlTemplate(template: SqlTemplate) {
+  selectedTemplate.value = { ...template }
+  sqlPreview.value = null
+  sqlTemplateVersions.value = await fetchSqlTemplateVersions(template.key)
+}
+
+function newSqlTemplate() {
+  selectedTemplate.value = {
+    key: `query.custom_${Date.now()}`,
+    label: '新查询模板',
+    description: '',
+    dialect: 'sqlite',
+    sql_text: 'SELECT object_id, label, object_type\nFROM object_instances\nLIMIT 100',
+    parameters: [],
+    published: false,
+    updated_at: '',
+  }
+  sqlTemplateVersions.value = []
+  sqlPreview.value = null
+  sqlParametersText.value = '{}'
+}
+
+async function runSqlPreview() {
+  if (!selectedTemplate.value) return
+  try {
+    const parameters = JSON.parse(sqlParametersText.value) as Record<string, unknown>
+    sqlPreview.value = await previewSqlTemplate(selectedTemplate.value.key, parameters)
+    toolMessage.value = `查询成功：返回 ${sqlPreview.value.row_count} 行。`
+  } catch (previewError) {
+    toolMessage.value = previewError instanceof Error ? previewError.message : 'SQL 预览失败'
+  }
+}
+
+async function removeCurrentTemplate() {
+  if (!selectedTemplate.value) return
+  if (!window.confirm(`删除 SQL 模板“${selectedTemplate.value.label}”？`)) return
+  await deleteSqlTemplate(selectedTemplate.value.key)
+  sqlTemplates.value = sqlTemplates.value.filter((item) => item.key !== selectedTemplate.value?.key)
+  selectedTemplate.value = sqlTemplates.value[0] ? { ...sqlTemplates.value[0] } : null
+  sqlTemplateVersions.value = selectedTemplate.value
+    ? await fetchSqlTemplateVersions(selectedTemplate.value.key)
+    : []
+  sqlPreview.value = null
+  toolMessage.value = 'SQL 模板已删除。'
+}
+
+async function persistPipeline(published = false) {
+  if (!pipelineSource.value) {
+    toolMessage.value = '请先选择数据源。'
+    return
+  }
+  try {
+    const steps = JSON.parse(pipelineStepsText.value) as StoredPipeline['steps']
+    const saved = await savePipeline({
+      key: pipelineKey.value,
+      label: pipelineLabel.value,
+      source: pipelineSource.value,
+      target: 'preview',
+      mode: 'preview',
+      steps,
+      published,
+      updated_at: '',
+    })
+    storedPipelines.value = [
+      ...storedPipelines.value.filter((item) => item.key !== saved.key),
+      saved,
+    ]
+    toolMessage.value = published ? '管道已发布。' : '管道草稿已保存。'
+  } catch (pipelineError) {
+    toolMessage.value = pipelineError instanceof Error ? pipelineError.message : '管道保存失败'
+  }
+}
+
+function selectPipeline(pipeline: StoredPipeline) {
+  pipelineKey.value = pipeline.key
+  pipelineLabel.value = pipeline.label
+  pipelineSource.value = pipeline.source
+  pipelineStepsText.value = JSON.stringify(pipeline.steps, null, 2)
+  pipelineResult.value = null
+  pipelinePanelOpen.value = true
+}
+
+async function persistPythonExtension(published = false) {
+  try {
+    const validation = await validatePythonExtension(selectedPythonExtension.value)
+    if (!validation.valid) {
+      toolMessage.value = validation.errors.join('；')
+      return
+    }
+    selectedPythonExtension.value.published = published
+    const saved = await savePythonExtension(selectedPythonExtension.value)
+    selectedPythonExtension.value = saved
+    pythonExtensions.value = [
+      ...pythonExtensions.value.filter((item) => item.key !== saved.key),
+      saved,
+    ]
+    toolMessage.value = published ? 'Python 扩展已校验并发布。' : 'Python 扩展草稿已保存。'
+  } catch (pythonError) {
+    toolMessage.value = pythonError instanceof Error ? pythonError.message : 'Python 扩展保存失败'
+  }
+}
+
+async function executePythonExtension() {
+  pythonRunning.value = true
+  pythonRun.value = null
+  try {
+    const inputData = JSON.parse(pythonInputText.value) as Record<string, unknown>
+    pythonRun.value = await runPythonExtension(selectedPythonExtension.value.key, inputData)
+    pythonRuns.value = await fetchPythonExtensionRuns(selectedPythonExtension.value.key)
+    toolMessage.value = `运行完成：${pythonRun.value.run_id}`
+  } catch (pythonError) {
+    toolMessage.value = pythonError instanceof Error ? pythonError.message : 'Python 扩展运行失败'
+  } finally {
+    pythonRunning.value = false
+  }
+}
+
+function selectPythonExtension(extension: PythonExtension) {
+  selectedPythonExtension.value = { ...extension }
+  pythonRun.value = null
+  void fetchPythonExtensionRuns(extension.key).then((items) => { pythonRuns.value = items })
 }
 
 async function persistDataSource() {
@@ -802,7 +1131,7 @@ onMounted(async () => {
               <textarea v-model="question" aria-label="输入要查询的业务问题" placeholder="例如：为什么一号线昨天订单达成率下降？" rows="2" @keydown.enter="submitOnEnter"></textarea>
               <div class="question-footer">
                 <div class="question-options">
-                  <label class="object-scope"><Boxes :size="14" /><select v-model="selectedObjectId" aria-label="查询范围"><option value="">自动识别范围</option><option v-for="item in objectInstances" :key="item.object_id" :value="item.object_id">{{ item.label }}</option></select></label>
+                  <span class="auto-understanding"><Sparkles :size="13" />自动理解指标、对象和时间</span>
                   <label class="vision-upload" title="上传现场图片辅助分析"><input type="file" accept="image/jpeg,image/png,image/webp" @change="handleVisionUpload" /><UploadCloud :size="14" />{{ visionLoading ? '识别中…' : '附图' }}</label>
                 </div>
                 <button class="send-button send-button--labeled" type="submit" :disabled="isLoading || !question.trim()">{{ isLoading ? '查询中' : '查询' }}<Send :size="16" /></button>
@@ -811,9 +1140,9 @@ onMounted(async () => {
 
             <div v-if="!result && !isLoading && !error" class="quick-questions">
               <span>可以这样问</span>
-              <button @click="submitQuestion('分析一号线昨天的 OEE')">一号线昨天 OEE 怎么样？</button>
-              <button @click="submitQuestion('一号线昨天停机时长是多少？')">昨天停机损失多少？</button>
-              <button @click="submitQuestion('为什么一号线昨天订单达成率下降？')">订单达成率为什么下降？</button>
+              <button @click="submitQuestion('昨天的 OEE 是多少？')">昨天的 OEE 是多少？</button>
+              <button @click="submitQuestion('哪些设备停机影响最大？')">哪些设备停机影响最大？</button>
+              <button @click="submitQuestion('本月订单达成率有什么变化？')">本月订单达成率有什么变化？</button>
             </div>
 
             <article v-if="visionAnalysis" class="vision-result"><div><UploadCloud :size="17" /><strong>图片识别结果</strong><span>{{ visionAnalysis.object_id }}</span></div><p>{{ visionAnalysis.analysis }}</p><small>{{ visionAnalysis.note }}</small></article>
@@ -823,7 +1152,8 @@ onMounted(async () => {
             <article v-else-if="result" class="analysis-card result-card">
               <div class="result-meta">
                 <span v-if="result.status === 'completed'" class="verified-badge"><ShieldCheck :size="14" />结果已校验</span>
-                <span v-else class="clarify-badge"><CircleDot :size="13" />需要补充信息</span>
+                <span v-else-if="result.status === 'no_data'" class="clarify-badge"><Database :size="13" />暂无真实数据</span>
+                <span v-else class="clarify-badge"><CircleDot :size="13" />需要自然语言确认</span>
                 <span>{{ result.semantic_version }}</span>
               </div>
               <h2>{{ result.answer }}</h2>
@@ -905,6 +1235,44 @@ onMounted(async () => {
             <p v-if="builderMessage" class="builder-message">{{ builderMessage }}</p><footer><button v-if="builderStep > 1 && builderStep < 4" @click="builderStep--">上一步</button><span></span><button v-if="builderStep === 1" class="primary-action" :disabled="!builderSource" @click="builderStep = 2">下一步</button><button v-else-if="builderStep === 3" class="primary-action" :disabled="builderLoading" @click="generateDomainCandidate"><Sparkles :size="14" />{{ builderLoading ? '生成中…' : '发现并生成候选' }}</button><button v-else-if="builderStep === 4" class="primary-action" @click="enterGovernance"><Check :size="14" />查看并发布</button></footer>
           </section>
         </div>
+      </section>
+
+      <section v-else-if="workspace === 'knowledge'" class="workspace knowledge-workspace">
+        <div class="workspace-heading">
+          <div><span class="eyebrow">GROUNDED KNOWLEDGE</span><h1>知识库</h1><p>内置文档直接轻量入库，也可连接企业现有知识平台；问数与智能体共享同一检索和引用入口。</p></div>
+          <div class="knowledge-heading-actions"><button @click="createKnowledgeBase('external')"><Link2 :size="15" />连接外部</button><button class="primary-action" @click="createKnowledgeBase('internal')"><Plus :size="15" />新建内置库</button></div>
+        </div>
+        <div v-if="knowledgeMessage" class="settings-message"><CircleDot :size="14" />{{ knowledgeMessage }}</div>
+        <div class="knowledge-layout">
+          <aside class="knowledge-sidebar">
+            <button v-for="item in knowledgeBases" :key="item.key" :class="{ active: selectedKnowledgeBase?.key === item.key }" @click="selectKnowledgeBase(item)">
+              <span :data-kind="item.kind"><Database v-if="item.kind === 'internal'" :size="15" /><Link2 v-else :size="15" />{{ item.kind === 'internal' ? '内置' : '外接' }}</span>
+              <strong>{{ item.name }}</strong><small>{{ item.kind === 'internal' ? `${item.document_count} 个文档` : String(item.configuration.endpoint || '未配置地址') }}</small>
+            </button>
+            <div v-if="!knowledgeBases.length" class="knowledge-empty"><BookOpen :size="24" /><strong>还没有知识库</strong><span>新建内置库或连接已有平台</span></div>
+          </aside>
+
+          <main v-if="selectedKnowledgeBase" class="knowledge-editor">
+            <div class="knowledge-editor-head"><div><span>{{ selectedKnowledgeBase.kind === 'internal' ? '内置知识库' : '外接知识库' }}</span><h2>{{ selectedKnowledgeBase.name }}</h2></div><label class="toggle-label"><input v-model="selectedKnowledgeBase.enabled" type="checkbox" />参与检索</label></div>
+            <div class="knowledge-form-grid"><label>名称<input v-model="selectedKnowledgeBase.name" /></label><label>唯一标识<input v-model="selectedKnowledgeBase.key" :disabled="Boolean(selectedKnowledgeBase.updated_at)" /></label></div>
+            <template v-if="selectedKnowledgeBase.kind === 'external'">
+              <label>连接配置 <small>支持通用 HTTP；请求体可用 <code v-pre>{{query}}</code> 与 <code v-pre>{{top_k}}</code></small><textarea v-model="knowledgeConfigurationText" rows="9" spellcheck="false"></textarea></label>
+              <label>凭证引用<input v-model="selectedKnowledgeBase.secret_reference" placeholder="env://FATHOM_KNOWLEDGE_API_KEY" /><small>只保存环境变量名称，不保存密钥明文</small></label>
+            </template>
+            <template v-else>
+              <div class="knowledge-upload"><UploadCloud :size="22" /><div><strong>导入知识文档</strong><span>TXT、Markdown、CSV、JSON、JSONL、YAML · UTF-8 · 单文件 5 MB</span></div><label><input type="file" accept=".txt,.md,.csv,.json,.jsonl,.yaml,.yml" :disabled="knowledgeBusy || !selectedKnowledgeBase.updated_at" @change="handleKnowledgeUpload" />选择文件</label></div>
+              <div class="knowledge-documents"><div class="panel-title"><div><FileCode2 :size="16" /><strong>已入库文档</strong></div><span>{{ knowledgeDocuments.length }}</span></div><article v-for="document in knowledgeDocuments" :key="document.document_id"><div><strong>{{ document.title }}</strong><small>{{ document.source_uri }} · {{ Math.ceil(document.size / 1024) }} KB</small></div><button title="删除文档" @click="removeKnowledgeDocument(document)"><Trash2 :size="14" /></button></article><p v-if="!knowledgeDocuments.length">保存知识库后即可导入文档。</p></div>
+            </template>
+            <div class="knowledge-editor-actions"><button v-if="selectedKnowledgeBase.updated_at" :disabled="knowledgeBusy" @click="verifyKnowledgeBase"><Play :size="14" />测试</button><button class="primary-action" :disabled="knowledgeBusy" @click="persistKnowledgeBase"><Save :size="14" />{{ knowledgeBusy ? '处理中…' : '保存' }}</button></div>
+          </main>
+          <div v-else class="knowledge-welcome"><BookOpen :size="34" /><h2>企业知识统一入口</h2><p>内置库适合制度、手册、SOP；外接库保留现有知识平台和权限体系。</p></div>
+        </div>
+
+        <section class="knowledge-playground">
+          <div><span class="eyebrow">RETRIEVAL TEST</span><h2>检索验证</h2><p>这里返回的来源和相关度，会原样提供给问数与上层智能体。</p></div>
+          <form @submit.prevent="runKnowledgeSearch"><Search :size="17" /><input v-model="knowledgeSearchQuery" placeholder="输入一个业务问题，验证所有已启用知识库" /><button class="primary-action" :disabled="knowledgeBusy">检索</button></form>
+          <div v-if="knowledgeHits.length" class="knowledge-hits"><article v-for="hit in knowledgeHits" :key="`${hit.knowledge_base_key}-${hit.document_id}-${hit.content}`"><header><strong>{{ hit.title }}</strong><span>{{ Math.round(hit.score * 100) }}%</span></header><p>{{ hit.content }}</p><footer><code>{{ hit.source_uri }}</code><span>{{ hit.retrieval }}</span></footer></article></div>
+        </section>
       </section>
 
       <section v-else-if="workspace === 'metrics'" class="workspace catalog-workspace">
@@ -993,41 +1361,56 @@ onMounted(async () => {
       </section>
 
       <section v-else-if="workspace === 'studio'" class="workspace studio-workspace">
-        <div class="workspace-heading"><div><span class="eyebrow">ENGINEERING TOOLKIT</span><h1>工程工具</h1><p>可执行数据管道、SQL 模板、导入导出与一致性备份集中管理。</p></div><div class="heading-actions"><span v-if="toolMessage" class="tool-message"><Check :size="14" />{{ toolMessage }}</span><button class="primary-action" @click="pipelinePanelOpen = !pipelinePanelOpen"><Workflow :size="16" />{{ pipelinePanelOpen ? '收起管道' : '新建管道' }}</button></div></div>
+        <div class="workspace-heading"><div><span class="eyebrow">ENGINEERING TOOLKIT</span><h1>工程工具</h1><p>写 SQL、编排数据、扩展逻辑；每一步都可预览、校验、发布和追溯。</p></div><span v-if="toolMessage" class="tool-message"><Check :size="14" />{{ toolMessage }}</span></div>
         <div class="studio-capabilities">
-          <article class="active"><Workflow :size="18" /><div><strong>无代码数据管道</strong><span>映射 · 清洗 · 质量 · 增量 · ONN</span></div><b>内置</b></article>
-          <article><Braces :size="18" /><div><strong>SQL 模板</strong><span>参数化 · 只读校验 · 版本管理</span></div><b>内置</b></article>
-          <article><FileCode2 :size="18" /><div><strong>Python 扩展</strong><span>沙箱 · 资源限制 · 审批发布</span></div><b>高级</b></article>
+          <button :class="{ active: activeStudioTool === 'sql' }" @click="activeStudioTool = 'sql'"><Braces :size="18" /><div><strong>SQL 开发</strong><span>校验 · 预览 · 版本 · 发布</span></div></button>
+          <button :class="{ active: activeStudioTool === 'pipeline' }" @click="activeStudioTool = 'pipeline'"><Workflow :size="18" /><div><strong>数据管道</strong><span>转换 · 质量 · ONN 映射</span></div></button>
+          <button :class="{ active: activeStudioTool === 'python' }" @click="activeStudioTool = 'python'"><FileCode2 :size="18" /><div><strong>Python 扩展</strong><span>隔离运行 · 限时 · 日志</span></div></button>
+          <button :class="{ active: activeStudioTool === 'transfer' }" @click="activeStudioTool = 'transfer'"><HardDrive :size="18" /><div><strong>迁移与恢复</strong><span>导入导出 · 备份 · 恢复</span></div></button>
         </div>
-        <section v-if="pipelinePanelOpen" class="pipeline-builder">
-          <div class="panel-title"><div><Workflow :size="17" /><strong>轻量数据管道</strong></div><span>DuckDB 本地执行 · 最大预览 50 行</span></div>
+
+        <section v-if="activeStudioTool === 'pipeline'" class="pipeline-builder">
+          <div class="panel-title"><div><Workflow :size="17" /><strong>数据管道</strong></div><span>DuckDB 内置执行 · 运行结果留痕</span></div>
+          <div v-if="storedPipelines.length" class="saved-pipeline-list"><button v-for="pipeline in storedPipelines" :key="pipeline.key" @click="selectPipeline(pipeline)"><strong>{{ pipeline.label }}</strong><span>{{ pipeline.source }} · {{ pipeline.published ? '已发布' : '草稿' }}</span></button></div>
           <div class="pipeline-form">
+            <div class="form-row"><label>管道标识<input v-model="pipelineKey" /></label><label>名称<input v-model="pipelineLabel" /></label></div>
             <label>事实源<select v-model="pipelineSource"><option value="">选择数据源</option><option v-for="source in dataSources.filter((item) => ['file', 'sqlite', 'duckdb'].includes(item.connector_type))" :key="source.key" :value="source.key">{{ source.name }} · {{ source.connector_type }}</option></select></label>
             <label>转换与质量步骤 JSON<textarea v-model="pipelineStepsText" rows="8" spellcheck="false"></textarea></label>
-            <div class="pipeline-actions"><small>支持重命名、类型转换、过滤、派生、去重、质量检查和 ONN 映射；生产全量与增量需审批后交给调度器。</small><button class="primary-action" :disabled="pipelineRunning" @click="runPipelinePreview"><Zap :size="15" />{{ pipelineRunning ? '执行中…' : '运行预览' }}</button></div>
+            <div class="pipeline-actions"><small>支持重命名、类型转换、过滤、派生、去重、质量检查和 ONN 映射。</small><div><button @click="persistPipeline(false)"><Save :size="14" />保存草稿</button><button class="primary-action" :disabled="pipelineRunning" @click="runPipelinePreview"><Play :size="15" />{{ pipelineRunning ? '执行中…' : '运行预览' }}</button><button @click="persistPipeline(true)"><ShieldCheck :size="14" />发布</button></div></div>
           </div>
           <div v-if="pipelineResult" class="pipeline-result">
-            <div class="pipeline-result-summary"><strong>{{ pipelineResult.status === 'passed' ? '质量门禁通过' : '质量门禁失败' }}</strong><span>{{ pipelineResult.row_count }} 行 · {{ pipelineResult.columns.length }} 列 · {{ pipelineResult.limits.memory }}</span></div>
+            <div class="pipeline-result-summary"><strong>{{ pipelineResult.status === 'passed' ? '质量门禁通过' : '质量门禁失败' }}</strong><span>{{ pipelineResult.row_count }} 行 · {{ pipelineResult.columns.length }} 列 · {{ pipelineResult.limits.memory }} · {{ pipelineResult.run_id }}</span></div>
             <div class="pipeline-table-wrap"><table><thead><tr><th v-for="column in pipelineResult.columns" :key="column">{{ column }}</th></tr></thead><tbody><tr v-for="(row, rowIndex) in pipelineResult.rows.slice(0, 8)" :key="rowIndex"><td v-for="column in pipelineResult.columns" :key="column">{{ row[column] }}</td></tr></tbody></table></div>
           </div>
         </section>
-        <div class="studio-grid">
-          <section class="sql-studio">
-            <div class="panel-title"><div><Braces :size="17" /><strong>SQL 模板</strong></div><span>只读安全门禁</span></div>
+
+        <section v-else-if="activeStudioTool === 'sql'" class="sql-studio">
+            <div class="panel-title"><div><Braces :size="17" /><strong>SQL 开发</strong></div><div><span>只读安全门禁</span><button @click="newSqlTemplate"><Plus :size="14" />新建</button></div></div>
             <div class="sql-layout">
               <nav class="template-list">
-                <button v-for="template in sqlTemplates" :key="template.key" :class="{ active: selectedTemplate?.key === template.key }" @click="selectedTemplate = { ...template }">
-                  <strong>{{ template.label }}</strong><small>{{ template.key }}</small>
+                <button v-for="template in sqlTemplates" :key="template.key" :class="{ active: selectedTemplate?.key === template.key }" @click="selectSqlTemplate(template)">
+                  <strong>{{ template.label }}</strong><small>{{ template.key }} · {{ template.published ? '已发布' : '草稿' }}</small>
                 </button>
               </nav>
               <div v-if="selectedTemplate" class="template-editor">
-                <div class="editor-meta"><input v-model="selectedTemplate.label" /><span>{{ selectedTemplate.dialect }}</span></div>
+                <div class="editor-meta"><input v-model="selectedTemplate.label" /><input v-model="selectedTemplate.key" :disabled="sqlTemplates.some((item) => item.key === selectedTemplate?.key)" /><select v-model="selectedTemplate.dialect"><option>sqlite</option><option>duckdb</option><option>postgres</option><option>mysql</option><option>tsql</option></select></div>
                 <textarea v-model="selectedTemplate.sql_text" spellcheck="false" aria-label="SQL 模板"></textarea>
-                <div class="editor-footer"><span>参数：{{ selectedTemplate.parameters.join(' · ') }}</span><div><button @click="checkTemplate"><ShieldCheck :size="14" />校验</button><button class="primary-action" @click="persistTemplate"><Save :size="14" />保存</button></div></div>
+                <div class="sql-parameter-row"><label>参数 JSON<input v-model="sqlParametersText" placeholder='{"object_id":"line_01"}' /></label><span>版本 {{ sqlTemplateVersions[0]?.version ?? 0 }}</span></div>
+                <div class="editor-footer"><span>声明参数：{{ selectedTemplate.parameters.join(' · ') || '无' }}</span><div><button @click="removeCurrentTemplate"><Trash2 :size="14" />删除</button><button @click="checkTemplate"><ShieldCheck :size="14" />格式化并校验</button><button @click="persistTemplate"><Save :size="14" />保存版本</button><button class="primary-action" @click="runSqlPreview"><Play :size="14" />运行预览</button></div></div>
+                <div v-if="sqlPreview" class="pipeline-result sql-preview"><div class="pipeline-result-summary"><strong>查询结果</strong><span>{{ sqlPreview.row_count }} 行 · {{ sqlPreview.executed_at }}</span></div><div class="pipeline-table-wrap"><table><thead><tr><th v-for="column in sqlPreview.columns" :key="column">{{ column }}</th></tr></thead><tbody><tr v-for="(row, index) in sqlPreview.rows" :key="index"><td v-for="column in sqlPreview.columns" :key="column">{{ row[column] }}</td></tr></tbody></table></div></div>
               </div>
             </div>
-          </section>
-          <aside class="transfer-stack">
+        </section>
+
+        <section v-else-if="activeStudioTool === 'python'" class="python-studio">
+          <div class="panel-title"><div><FileCode2 :size="17" /><strong>Python 扩展</strong></div><span>受限纯函数 · 无网络 · 独立进程</span></div>
+          <div class="python-layout">
+            <nav class="template-list"><button v-for="extension in pythonExtensions" :key="extension.key" :class="{ active: extension.key === selectedPythonExtension.key }" @click="selectPythonExtension(extension)"><strong>{{ extension.label }}</strong><small>{{ extension.key }} · v{{ extension.version }} · {{ extension.published ? '已发布' : '草稿' }}</small></button><button class="new-item" @click="selectedPythonExtension = { ...selectedPythonExtension, key: `extension.custom_${Date.now()}`, label: '新 Python 扩展', version: 1, published: false, updated_at: '' }"><Plus :size="14" />新建扩展</button></nav>
+            <div class="python-editor"><div class="editor-meta"><input v-model="selectedPythonExtension.label" /><input v-model="selectedPythonExtension.key" /><span>v{{ selectedPythonExtension.version }}</span></div><textarea v-model="selectedPythonExtension.code" rows="16" spellcheck="false"></textarea><div class="python-runtime"><label>测试输入 JSON<textarea v-model="pythonInputText" rows="4"></textarea></label><div><label>超时（秒）<input v-model.number="selectedPythonExtension.timeout_seconds" type="number" min="1" max="60" /></label><label>内存预算（MB）<input v-model.number="selectedPythonExtension.memory_mb" type="number" min="64" max="512" /></label></div></div><div class="editor-footer"><span>入口：transform(input_data) · 输出 ≤1 MB</span><div><button @click="persistPythonExtension(false)"><Save :size="14" />保存草稿</button><button @click="persistPythonExtension(true)"><ShieldCheck :size="14" />校验并发布</button><button class="primary-action" :disabled="pythonRunning || !selectedPythonExtension.published" @click="executePythonExtension"><Play :size="14" />{{ pythonRunning ? '运行中…' : '运行' }}</button></div></div><pre v-if="pythonRun" class="run-output">{{ JSON.stringify(pythonRun, null, 2) }}</pre><div v-if="pythonRuns.length" class="run-history"><strong>最近运行</strong><span v-for="run in pythonRuns.slice(0, 5)" :key="run.run_id">{{ run.started_at.slice(0, 16).replace('T', ' ') }} · {{ run.status }} · {{ run.run_id }}</span></div></div>
+          </div>
+        </section>
+
+        <div v-else class="transfer-stack transfer-stack--wide">
             <section class="transfer-card">
               <div class="panel-title"><div><UploadCloud :size="17" /><strong>导入与导出</strong></div></div>
               <label class="drop-zone"><input type="file" accept=".csv,.json,.jsonl,.yaml,.yml" @change="handleImport" /><UploadCloud :size="22" /><strong>导入并预检</strong><span>CSV · JSON · JSONL · YAML</span></label>
@@ -1042,8 +1425,7 @@ onMounted(async () => {
                 <div v-if="!backups.length" class="empty-state">尚无备份，首次发布前建议创建快照。</div>
               </div>
             </section>
-          </aside>
-        </div>
+          </div>
       </section>
 
       <section v-else-if="workspace === 'governance'" class="workspace governance-workspace">

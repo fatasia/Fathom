@@ -4,7 +4,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fathom.config import Settings
-from sqlalchemy import JSON, DateTime, Float, Integer, String, create_engine, inspect, select, text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    create_engine,
+    delete,
+    inspect,
+    select,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -144,6 +155,104 @@ class SqlTemplateRecord(Base):
     parameters: Mapped[list] = mapped_column(JSON, default=list)
     published: Mapped[bool] = mapped_column(default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SqlTemplateVersionRecord(Base):
+    __tablename__ = "sql_template_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    template_key: Mapped[str] = mapped_column(String(160), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class PipelineRecord(Base):
+    __tablename__ = "pipelines"
+
+    key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    label: Mapped[str] = mapped_column(String(160), index=True)
+    source: Mapped[str] = mapped_column(String(160), index=True)
+    target: Mapped[str] = mapped_column(String(160))
+    mode: Mapped[str] = mapped_column(String(32))
+    cursor_field: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    published: Mapped[bool] = mapped_column(default=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class PipelineRunRecord(Base):
+    __tablename__ = "pipeline_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    pipeline_key: Mapped[str] = mapped_column(String(160), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    result: Mapped[dict] = mapped_column(JSON)
+
+
+class PythonExtensionRecord(Base):
+    __tablename__ = "python_extensions"
+
+    key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    label: Mapped[str] = mapped_column(String(160), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    code: Mapped[str] = mapped_column(String)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    memory_mb: Mapped[int] = mapped_column(Integer, default=256)
+    published: Mapped[bool] = mapped_column(default=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class PythonExtensionRunRecord(Base):
+    __tablename__ = "python_extension_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    extension_key: Mapped[str] = mapped_column(String(160), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    input_data: Mapped[dict] = mapped_column(JSON)
+    output_data: Mapped[dict] = mapped_column(JSON)
+    logs: Mapped[str] = mapped_column(String, default="")
+    error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+
+
+class KnowledgeBaseRecord(Base):
+    __tablename__ = "knowledge_bases"
+
+    key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    configuration: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    enabled: Mapped[bool] = mapped_column(default=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class KnowledgeDocumentRecord(Base):
+    __tablename__ = "knowledge_documents"
+
+    document_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    knowledge_base_key: Mapped[str] = mapped_column(String(160), index=True)
+    title: Mapped[str] = mapped_column(String(500), index=True)
+    source_uri: Mapped[str] = mapped_column(String(1000))
+    content: Mapped[str] = mapped_column(String)
+    document_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class KnowledgeChunkRecord(Base):
+    __tablename__ = "knowledge_chunks"
+
+    chunk_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(64), index=True)
+    knowledge_base_key: Mapped[str] = mapped_column(String(160), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(String)
+    chunk_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class DataSourceRecord(Base):
@@ -352,6 +461,53 @@ def seed_demo_object_instances(session_factory: sessionmaker[Session]) -> None:
             ]
         )
         session.commit()
+
+
+def remove_legacy_demo_data(session_factory: sessionmaker[Session]) -> int:
+    """Remove facts created by early FATHOM demo bootstrapping.
+
+    Semantic contracts and metric definitions are intentionally preserved. Only
+    instance data carrying the legacy ``demo.manufacturing`` source marker and
+    facts attached to those instances are removed.
+    """
+    with session_factory() as session:
+        demo_object_ids = set(
+            session.scalars(
+                select(ObjectInstanceRecord.object_id).where(
+                    ObjectInstanceRecord.source_key == "demo.manufacturing"
+                )
+            ).all()
+        )
+        if not demo_object_ids:
+            return 0
+
+        trace_ids = []
+        for trace in session.scalars(select(QueryTraceRecord)).all():
+            anchors = trace.plan.get("anchors", []) if isinstance(trace.plan, dict) else []
+            if any(anchor.get("key") in demo_object_ids for anchor in anchors):
+                trace_ids.append(trace.trace_id)
+
+        session.execute(
+            delete(RelationEdgeRecord).where(
+                (RelationEdgeRecord.source_id.in_(demo_object_ids))
+                | (RelationEdgeRecord.target_id.in_(demo_object_ids))
+            )
+        )
+        session.execute(
+            delete(MetricObservationRecord).where(
+                MetricObservationRecord.object_id.in_(demo_object_ids)
+            )
+        )
+        session.execute(delete(EventRecord).where(EventRecord.object_id.in_(demo_object_ids)))
+        if trace_ids:
+            session.execute(delete(QueryTraceRecord).where(QueryTraceRecord.trace_id.in_(trace_ids)))
+        session.execute(
+            delete(ObjectInstanceRecord).where(
+                ObjectInstanceRecord.source_key == "demo.manufacturing"
+            )
+        )
+        session.commit()
+        return len(demo_object_ids)
 
 
 def seed_sql_templates(session_factory: sessionmaker[Session]) -> None:

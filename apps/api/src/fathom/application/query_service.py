@@ -12,6 +12,7 @@ from fathom.adapters.storage.database import (
     RelationEdgeRecord,
 )
 from fathom.adapters.storage.semantic_repository import SqlSemanticRepository
+from fathom.application.knowledge import KnowledgeSearchInput, KnowledgeService
 from fathom.domains.query.models import (
     AbcStage,
     AskRequest,
@@ -113,7 +114,7 @@ class SemanticPlanner:
             )
 
         is_diagnostic = any(token in question for token in ["为什么", "原因", "下降", "异常"])
-        time_range = "yesterday" if "昨天" in question else "latest"
+        time_range = self._resolve_time_range(question)
         return FathomPlan(
             question=request.question,
             status=PlanStatus.READY,
@@ -245,7 +246,33 @@ class SemanticPlanner:
         if candidates:
             labels = "、".join(item.label for item in candidates[:5])
             return f"你想看哪个范围：{labels}？直接说业务名称即可。"
+        with self._session_factory() as session:
+            has_objects = session.scalar(
+                select(ObjectInstanceRecord.object_id)
+                .where(ObjectInstanceRecord.state == "active")
+                .limit(1)
+            )
+        if has_objects is None:
+            return (
+                "当前还没有可查询的企业事实数据。请先在“数据接入”连接数据源并完成语义映射；"
+                "指标定义已经保留，但系统不会用示例数字代替真实结果。"
+            )
         return "请告诉我想看的工厂、产线或设备名称，例如“一号线”；无需填写技术 ID。"
+
+    @staticmethod
+    def _resolve_time_range(question: str) -> str:
+        if "昨天" in question or "昨日" in question:
+            return "yesterday"
+        if "今天" in question or "今日" in question:
+            return "today"
+        date_match = re.search(r"(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})日?", question)
+        if date_match:
+            year, month, day = (int(value) for value in date_match.groups())
+            try:
+                return datetime(year, month, day, tzinfo=UTC).date().isoformat()
+            except ValueError:
+                pass
+        return "latest"
 
 
 class QueryService:
@@ -253,10 +280,12 @@ class QueryService:
         self,
         session_factory: sessionmaker[Session],
         semantic_repository: SqlSemanticRepository,
+        knowledge_service: KnowledgeService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = semantic_repository
         self._planner = SemanticPlanner(session_factory, semantic_repository)
+        self._knowledge_service = knowledge_service
 
     def plan(self, request: AskRequest) -> FathomPlan:
         """Build a validated plan without executing data access or writing a trace."""
@@ -272,15 +301,31 @@ class QueryService:
         semantic_version = request.semantic_version or "manufacturing.execution@0.1.0"
 
         if plan.status != PlanStatus.READY or plan.binding is None:
+            knowledge_response = self._answer_from_knowledge(
+                request.question, trace_id, semantic_version
+            )
+            if knowledge_response is not None:
+                self._save_trace(
+                    trace_id,
+                    request.question,
+                    knowledge_response.plan,
+                    knowledge_response.status,
+                )
+                return knowledge_response
+            no_data = bool(plan.clarification and plan.clarification.startswith("当前还没有"))
             response = AskResponse(
-                status=plan.status.value,
+                status="no_data" if no_data else plan.status.value,
                 answer=plan.clarification or "需要补充信息后才能执行。",
                 plan=plan,
                 data={"columns": [], "rows": []},
                 chart_spec={"type": "none"},
                 evidence=[],
-                quality_warnings=[],
-                suggested_followups=["查看一号线昨天的订单达成率", "分析一号线昨天的 OEE"],
+                quality_warnings=["尚未接入企业事实数据"] if no_data else [],
+                suggested_followups=(
+                    ["去数据接入连接企业数据源", "查看已发布指标定义"]
+                    if no_data
+                    else ["直接说出工厂、产线或设备名称", "换一个业务指标提问"]
+                ),
                 trace_id=trace_id,
                 semantic_version=semantic_version,
                 data_freshness=datetime.now(UTC).isoformat(),
@@ -292,18 +337,24 @@ class QueryService:
         if authorized_objects is not None and object_id not in authorized_objects:
             raise PermissionError(f"无权访问业务对象：{object_id}")
         with self._session_factory() as session:
+            object_record = session.get(ObjectInstanceRecord, object_id)
             related_ids = session.scalars(
                 select(RelationEdgeRecord.target_id).where(
                     RelationEdgeRecord.source_id == object_id
                 )
             ).all()
             event_scope = [object_id, *related_ids]
-            observations = session.scalars(
-                select(MetricObservationRecord)
-                .where(
-                    MetricObservationRecord.metric_key == plan.binding.metric,
-                    MetricObservationRecord.object_id == object_id,
+            observation_query = select(MetricObservationRecord).where(
+                MetricObservationRecord.metric_key == plan.binding.metric,
+                MetricObservationRecord.object_id == object_id,
+            )
+            range_end = self._range_end(plan.binding.time_range)
+            if range_end is not None:
+                observation_query = observation_query.where(
+                    MetricObservationRecord.observed_at < range_end
                 )
+            observations = session.scalars(
+                observation_query
                 .order_by(MetricObservationRecord.observed_at.desc())
                 .limit(2)
             ).all()
@@ -316,17 +367,50 @@ class QueryService:
                 .order_by(EventRecord.duration_minutes.desc())
             ).all()
 
+        asset = next(
+            asset for asset in self._repository.list_assets() if asset.key == plan.binding.metric
+        )
+        object_label = object_record.label if object_record else object_id
+        source_key = object_record.source_key if object_record else "unknown"
         if not observations:
-            raise LookupError(f"No observations found for {plan.binding.metric}")
+            response = AskResponse(
+                status="no_data",
+                answer=(
+                    f"已识别“{object_label}”和“{asset.label}”，"
+                    f"但在请求的时间范围内没有真实观测数据。系统没有使用示例值补齐结果。"
+                ),
+                plan=plan,
+                data={"columns": [], "rows": []},
+                chart_spec={"type": "none"},
+                evidence=[
+                    Evidence(
+                        type="semantic_contract",
+                        title=f"{asset.label} · 已发布口径",
+                        reference=f"semantic://{asset.key}@0.1.0",
+                        detail=asset.expression or asset.description,
+                    )
+                ],
+                quality_warnings=["请求范围内没有可验证的真实观测值"],
+                suggested_followups=["检查数据源同步状态", "查看该指标的数据映射"],
+                trace_id=trace_id,
+                semantic_version=semantic_version,
+                data_freshness=datetime.now(UTC).isoformat(),
+            )
+            self._save_trace(trace_id, request.question, plan, response.status)
+            return response
 
         current = observations[0]
         previous = observations[1] if len(observations) > 1 else None
         delta = current.value - previous.value if previous else 0.0
-        asset = next(
-            asset for asset in self._repository.list_assets() if asset.key == plan.binding.metric
-        )
         relevant_events = [event for event in events if event.payload.get("line") == object_id][:4]
-        answer = self._compose_answer(asset, current.value, delta, relevant_events, plan.intent)
+        answer = self._compose_answer(
+            object_label,
+            asset,
+            current.value,
+            delta,
+            relevant_events,
+            plan.intent,
+        )
         rows = [
             {
                 "period": observation.observed_at.date().isoformat(),
@@ -370,8 +454,8 @@ class QueryService:
                 Evidence(
                     type="observation",
                     title="指标观测值",
-                    reference="sqlite://metric_observations",
-                    detail=f"对象 {object_id}，数据时间 {freshness}",
+                    reference=f"source://{source_key}",
+                    detail=f"对象 {object_label}，数据时间 {freshness}",
                 ),
                 *[
                     Evidence(
@@ -396,8 +480,79 @@ class QueryService:
         self._save_trace(trace_id, request.question, plan, response.status)
         return response
 
+    def _answer_from_knowledge(
+        self, question: str, trace_id: str, semantic_version: str
+    ) -> AskResponse | None:
+        if self._knowledge_service is None:
+            return None
+        search = self._knowledge_service.search(
+            KnowledgeSearchInput(query=question, top_k=4)
+        )
+        hits = search["items"]
+        if not hits or float(hits[0].get("score", 0)) < 0.35:
+            return None
+        top = hits[0]
+        plan = FathomPlan(
+            question=question,
+            status=PlanStatus.READY,
+            intent="knowledge_search",
+            anchors=[
+                PlanAnchor(
+                    kind="knowledge_base",
+                    key=top["knowledge_base_key"],
+                    label=top["title"],
+                )
+            ],
+            abc=[
+                AbcStage(
+                    code="A",
+                    name="Acquire",
+                    status="completed",
+                    summary="检索已启用的内置与外接知识库",
+                ),
+                AbcStage(
+                    code="B",
+                    name="Build",
+                    status="completed",
+                    summary="按相关度合并、去重并保留来源",
+                ),
+                AbcStage(
+                    code="C",
+                    name="Compute",
+                    status="completed",
+                    summary="返回知识原文与可追溯引用",
+                ),
+            ],
+            validations=["知识片段保留原始来源", "未使用知识库之外的事实补写答案"],
+        )
+        excerpt = str(top["content"]).strip()
+        if len(excerpt) > 900:
+            excerpt = f"{excerpt[:900].rstrip()}…"
+        return AskResponse(
+            status="completed",
+            answer=f"根据《{top['title']}》：\n{excerpt}",
+            plan=plan,
+            data={"columns": [], "rows": []},
+            chart_spec={"type": "none"},
+            evidence=[
+                Evidence(
+                    type="knowledge",
+                    title=item["title"],
+                    reference=item["source_uri"],
+                    detail=f"{item['retrieval']} · 相关度 {float(item['score']):.2f}",
+                )
+                for item in hits
+            ],
+            quality_warnings=search["warnings"],
+            suggested_followups=["查看完整来源", "换一种说法继续检索"],
+            trace_id=trace_id,
+            semantic_version=semantic_version,
+            data_freshness=datetime.now(UTC).isoformat(),
+        )
+
     @staticmethod
     def _compose_answer(
+        object_label: str,
         asset: SemanticAsset,
         current: float,
         delta: float,
@@ -407,7 +562,7 @@ class QueryService:
         unit = asset.unit or ""
         direction = "下降" if delta < 0 else "上升"
         summary = (
-            f"一号生产线{asset.label}为 {current:.1f}{unit}，"
+            f"{object_label}{asset.label}为 {current:.1f}{unit}，"
             f"较前一日{direction} {abs(delta):.1f}{unit}。"
         )
         if intent != "diagnose_metric" or not events:
@@ -418,6 +573,21 @@ class QueryService:
             f"{summary} 主要关联 {total_minutes:.0f} 分钟的异常与换型事件，"
             f"其中影响最大的是“{top_reason}”。这是基于事件关联的诊断结论，不等同于已证明的因果关系。"
         )
+
+    @staticmethod
+    def _range_end(time_range: str) -> datetime | None:
+        now = datetime.now(UTC)
+        if time_range == "latest":
+            return None
+        if time_range == "today":
+            return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        if time_range == "yesterday":
+            return now.replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            start = datetime.fromisoformat(time_range).replace(tzinfo=UTC)
+        except ValueError:
+            return None
+        return start + timedelta(days=1)
 
     def _save_trace(self, trace_id: str, question: str, plan: FathomPlan, status: str) -> None:
         with self._session_factory() as session:

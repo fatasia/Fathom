@@ -95,6 +95,117 @@ def test_sql_template_rejects_mutation(tmp_path: Path) -> None:
     assert response.json()["safe"] is False
 
 
+def test_sql_template_versions_and_read_only_preview(tmp_path: Path) -> None:
+    payload = {
+        "key": "metric.oee_preview",
+        "label": "OEE 观测预览",
+        "description": "按对象读取 OEE",
+        "dialect": "sqlite",
+        "sql_text": (
+            "SELECT object_id, value FROM metric_observations "
+            "WHERE metric_key = :metric_key ORDER BY observed_at DESC"
+        ),
+        "parameters": ["metric_key"],
+        "published": True,
+    }
+    with make_client(tmp_path) as client:
+        saved = client.put("/api/v1/tools/sql-templates/metric.oee_preview", json=payload)
+        preview = client.post(
+            "/api/v1/tools/sql-templates/metric.oee_preview/preview",
+            json={"parameters": {"metric_key": "oee"}, "limit": 10},
+        )
+        versions = client.get("/api/v1/tools/sql-templates/metric.oee_preview/versions")
+    assert saved.status_code == 200
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["row_count"] == 2
+    assert preview.json()["rows"][0]["value"] == 78.2
+    assert versions.json()["items"][0]["version"] == 1
+
+
+def test_restricted_python_extension_validates_publishes_and_runs(tmp_path: Path) -> None:
+    payload = {
+        "key": "quality.normalize",
+        "label": "质量归一化",
+        "code": (
+            "def transform(input_data):\n"
+            "    value = float(input_data.get('value', 0))\n"
+            "    return {'normalized': round(value / 100, 4)}\n"
+        ),
+        "timeout_seconds": 5,
+        "memory_mb": 128,
+        "published": True,
+    }
+    with make_client(tmp_path) as client:
+        saved = client.put("/api/v1/python-extensions/quality.normalize", json=payload)
+        executed = client.post(
+            "/api/v1/python-extensions/quality.normalize/runs",
+            json={"input_data": {"value": 82.5}},
+        )
+        rejected = client.post(
+            "/api/v1/python-extensions/validate",
+            json={**payload, "code": "import os\ndef transform(input_data):\n    return {}"},
+        )
+    assert saved.status_code == 200, saved.text
+    assert executed.status_code == 200, executed.text
+    assert executed.json()["output"] == {"normalized": 0.825}
+    assert rejected.json()["valid"] is False
+    assert "os" in rejected.json()["errors"][0]
+
+
+def test_internal_knowledge_ingest_search_and_ask(tmp_path: Path) -> None:
+    knowledge_base = {
+        "key": "quality.manuals",
+        "name": "质量作业知识",
+        "kind": "internal",
+        "configuration": {},
+        "enabled": True,
+    }
+    document = {
+        "title": "首件检验规范",
+        "content": "首件检验必须在换线、换模和工艺参数调整后执行，并保留检验记录。",
+        "source_uri": "manual://quality/first-article",
+        "metadata": {"owner": "质量部"},
+    }
+    with make_client(tmp_path) as client:
+        saved = client.put("/api/v1/knowledge-bases/quality.manuals", json=knowledge_base)
+        ingested = client.post(
+            "/api/v1/knowledge-bases/quality.manuals/documents", json=document
+        )
+        searched = client.post(
+            "/api/v1/knowledge/search",
+            json={"query": "什么时候必须做首件检验？", "top_k": 3},
+        )
+        asked = client.post(
+            "/api/v1/query/ask", json={"question": "什么时候必须做首件检验？"}
+        )
+    assert saved.status_code == 200, saved.text
+    assert ingested.status_code == 200, ingested.text
+    assert ingested.json()["chunk_count"] == 1
+    assert searched.status_code == 200, searched.text
+    assert searched.json()["items"][0]["source_uri"] == "manual://quality/first-article"
+    assert asked.status_code == 200, asked.text
+    assert asked.json()["status"] == "completed"
+    assert asked.json()["plan"]["intent"] == "knowledge_search"
+    assert asked.json()["evidence"][0]["type"] == "knowledge"
+
+
+def test_external_knowledge_rejects_inline_secret(tmp_path: Path) -> None:
+    payload = {
+        "key": "enterprise.knowledge",
+        "name": "企业知识平台",
+        "kind": "external",
+        "configuration": {
+            "endpoint": "https://knowledge.example.test/search",
+            "api_key": "must-not-be-stored",
+        },
+        "enabled": True,
+    }
+    with make_client(tmp_path) as client:
+        response = client.put("/api/v1/knowledge-bases/enterprise.knowledge", json=payload)
+    assert response.status_code == 422
+    assert "env://" in response.text
+
+
 def test_backup_contains_database_and_semantics(tmp_path: Path) -> None:
     settings = Settings(
         environment="test",
@@ -141,8 +252,9 @@ def test_dify_tool_schema_is_downloadable(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.get("/api/v1/integrations/dify/openapi.yaml")
     assert response.status_code == 200
-    assert "openapi: 3.1.0" in response.text
+    assert "openapi: 3.0.3" in response.text
     assert "ask_data" in response.text
+    assert "search_enterprise_knowledge" in response.text
 
 
 def test_dbt_semantic_layer_import_creates_onn_candidate(tmp_path: Path) -> None:

@@ -8,14 +8,22 @@ import type {
   DifyIntegrationStatus,
   EffectiveConfiguration,
   EvaluationReport,
+  KnowledgeBase,
+  KnowledgeDocument,
+  KnowledgeHit,
   ModelProvider,
   ModelProviderPreset,
   ModelRoute,
   ObjectInstance,
   PipelinePreview,
+  PythonExtension,
+  PythonExtensionRun,
   SemanticOverview,
   SemanticChange,
+  SqlPreview,
   SqlTemplate,
+  SqlTemplateVersion,
+  StoredPipeline,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -50,10 +58,10 @@ export function runAgentFlow(payload: {
   })
 }
 
-export function askData(question: string, objectId?: string): Promise<AskResult> {
+export function askData(question: string): Promise<AskResult> {
   return request('/api/v1/query/ask', {
     method: 'POST',
-    body: JSON.stringify({ question, scope: objectId ? { object_id: objectId } : {} }),
+    body: JSON.stringify({ question }),
   })
 }
 
@@ -91,6 +99,29 @@ export async function validateSqlTemplate(template: SqlTemplate): Promise<Record
   })
 }
 
+export async function fetchSqlTemplateVersions(key: string): Promise<SqlTemplateVersion[]> {
+  return (await request<{ items: SqlTemplateVersion[] }>(
+    `/api/v1/tools/sql-templates/${encodeURIComponent(key)}/versions`,
+  )).items
+}
+
+export function previewSqlTemplate(
+  key: string,
+  parameters: Record<string, unknown>,
+): Promise<SqlPreview> {
+  return request(`/api/v1/tools/sql-templates/${encodeURIComponent(key)}/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ parameters, limit: 100 }),
+  })
+}
+
+export async function deleteSqlTemplate(key: string): Promise<void> {
+  const response = await fetch(`/api/v1/tools/sql-templates/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) throw new Error(`删除失败：${response.status}`)
+}
+
 export async function fetchConnectorTypes(): Promise<ConnectorType[]> {
   return (await request<{ items: ConnectorType[] }>('/api/v1/data-sources/types')).items
 }
@@ -108,6 +139,59 @@ export function saveDataSource(source: DataSource): Promise<DataSource> {
 
 export function testDataSource(key: string): Promise<{ status: string; message: string }> {
   return request(`/api/v1/data-sources/${key}/test`, { method: 'POST' })
+}
+
+export async function fetchKnowledgeBases(): Promise<KnowledgeBase[]> {
+  return (await request<{ items: KnowledgeBase[] }>('/api/v1/knowledge-bases')).items
+}
+
+export function saveKnowledgeBase(knowledgeBase: KnowledgeBase): Promise<KnowledgeBase> {
+  return request(`/api/v1/knowledge-bases/${encodeURIComponent(knowledgeBase.key)}`, {
+    method: 'PUT',
+    body: JSON.stringify(knowledgeBase),
+  })
+}
+
+export function testKnowledgeBase(key: string): Promise<{ status: string; message: string }> {
+  return request(`/api/v1/knowledge-bases/${encodeURIComponent(key)}/test`, { method: 'POST' })
+}
+
+export async function fetchKnowledgeDocuments(key: string): Promise<KnowledgeDocument[]> {
+  return (await request<{ items: KnowledgeDocument[] }>(
+    `/api/v1/knowledge-bases/${encodeURIComponent(key)}/documents`,
+  )).items
+}
+
+export async function uploadKnowledgeDocument(key: string, file: File): Promise<Record<string, unknown>> {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await fetch(
+    `/api/v1/knowledge-bases/${encodeURIComponent(key)}/documents/upload`,
+    { method: 'POST', body: form },
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { detail?: string }
+    throw new Error(payload.detail || `文档导入失败：${response.status}`)
+  }
+  return response.json() as Promise<Record<string, unknown>>
+}
+
+export async function deleteKnowledgeDocument(key: string, documentId: string): Promise<void> {
+  const response = await fetch(
+    `/api/v1/knowledge-bases/${encodeURIComponent(key)}/documents/${encodeURIComponent(documentId)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) throw new Error(`删除失败：${response.status}`)
+}
+
+export async function searchKnowledge(query: string, topK = 5): Promise<{
+  items: KnowledgeHit[]
+  warnings: string[]
+}> {
+  return request('/api/v1/knowledge/search', {
+    method: 'POST',
+    body: JSON.stringify({ query, top_k: topK }),
+  })
 }
 
 export async function previewImport(file: File): Promise<Record<string, unknown>> {
@@ -277,4 +361,51 @@ export function previewPipeline(payload: {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export async function fetchPipelines(): Promise<StoredPipeline[]> {
+  return (await request<{ items: StoredPipeline[] }>('/api/v1/pipelines')).items
+}
+
+export function savePipeline(pipeline: StoredPipeline): Promise<StoredPipeline> {
+  return request(
+    `/api/v1/pipelines/${encodeURIComponent(pipeline.key)}?published=${pipeline.published}`,
+    { method: 'PUT', body: JSON.stringify(pipeline) },
+  )
+}
+
+export async function fetchPythonExtensions(): Promise<PythonExtension[]> {
+  return (await request<{ items: PythonExtension[] }>('/api/v1/python-extensions')).items
+}
+
+export function savePythonExtension(extension: PythonExtension): Promise<PythonExtension> {
+  return request(`/api/v1/python-extensions/${encodeURIComponent(extension.key)}`, {
+    method: 'PUT',
+    body: JSON.stringify(extension),
+  })
+}
+
+export function validatePythonExtension(extension: PythonExtension): Promise<{
+  valid: boolean
+  errors: string[]
+}> {
+  return request('/api/v1/python-extensions/validate', {
+    method: 'POST',
+    body: JSON.stringify(extension),
+  })
+}
+
+export function runPythonExtension(
+  key: string,
+  inputData: Record<string, unknown>,
+): Promise<PythonExtensionRun> {
+  return request(`/api/v1/python-extensions/${encodeURIComponent(key)}/runs`, {
+    method: 'POST',
+    body: JSON.stringify({ input_data: inputData }),
+  })
+}
+
+export async function fetchPythonExtensionRuns(key?: string): Promise<PythonExtensionRun[]> {
+  const query = key ? `?extension_key=${encodeURIComponent(key)}` : ''
+  return (await request<{ items: PythonExtensionRun[] }>(`/api/v1/python-extension-runs${query}`)).items
 }

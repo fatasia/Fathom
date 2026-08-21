@@ -22,6 +22,11 @@ from fathom.application.ingestion import (
     ObjectInstanceInput,
     RelationInput,
 )
+from fathom.application.knowledge import (
+    KnowledgeBaseInput,
+    KnowledgeDocumentInput,
+    KnowledgeSearchInput,
+)
 from fathom.application.model_gateway import (
     MODEL_ROLES,
     PROVIDER_PROFILES,
@@ -31,12 +36,18 @@ from fathom.application.model_gateway import (
 from fathom.application.platform_tools import (
     RestoreRequest,
     SemanticImportRequest,
+    SqlPreviewRequest,
     SqlTemplateInput,
     SqlTemplateService,
     export_dataset_csv,
     inspect_import,
 )
-from fathom.domains.pipelines.models import PipelineDefinition, PythonExtensionManifest
+from fathom.application.python_extensions import (
+    PythonExtensionInput,
+    PythonExtensionService,
+    PythonRunInput,
+)
+from fathom.domains.pipelines.models import PipelineDefinition
 from fathom.domains.query.models import AskRequest, AskResponse
 from fathom.domains.semantics.models import DomainContract
 
@@ -418,6 +429,42 @@ def save_sql_template(template_key: str, payload: SqlTemplateInput, request: Req
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+@router.delete("/tools/sql-templates/{template_key}", status_code=204)
+def delete_sql_template(template_key: str, request: Request) -> Response:
+    try:
+        request.app.state.sql_template_service.delete(template_key)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(status_code=204)
+
+
+@router.get("/tools/sql-templates/{template_key}/versions")
+def list_sql_template_versions(template_key: str, request: Request) -> dict:
+    return {"items": request.app.state.sql_template_service.versions(template_key)}
+
+
+@router.post("/tools/sql-templates/{template_key}/versions/{version}/restore")
+def restore_sql_template_version(template_key: str, version: int, request: Request) -> dict:
+    try:
+        return request.app.state.sql_template_service.restore_version(template_key, version)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/tools/sql-templates/{template_key}/preview")
+def preview_sql_template(
+    template_key: str, payload: SqlPreviewRequest, request: Request
+) -> dict:
+    try:
+        return request.app.state.sql_template_service.preview(
+            template_key, payload.parameters, payload.limit
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 @router.get("/system/backups")
 def list_backups(request: Request) -> dict:
     return {"items": request.app.state.backup_service.list()}
@@ -544,6 +591,129 @@ def list_data_source_types() -> dict:
     return {"items": connector_catalog()}
 
 
+@router.get("/knowledge-bases")
+def list_knowledge_bases(request: Request) -> dict:
+    return {"items": request.app.state.knowledge_service.list_bases()}
+
+
+@router.put("/knowledge-bases/{knowledge_base_key}")
+def save_knowledge_base(
+    knowledge_base_key: str, payload: KnowledgeBaseInput, request: Request
+) -> dict:
+    if knowledge_base_key != payload.key:
+        raise HTTPException(status_code=400, detail="Path key and payload key must match")
+    try:
+        return request.app.state.knowledge_service.save_base(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.delete("/knowledge-bases/{knowledge_base_key}", status_code=204)
+def delete_knowledge_base(knowledge_base_key: str, request: Request) -> Response:
+    try:
+        request.app.state.knowledge_service.delete_base(knowledge_base_key)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(status_code=204)
+
+
+@router.post("/knowledge-bases/{knowledge_base_key}/test")
+def test_knowledge_base(knowledge_base_key: str, request: Request) -> dict:
+    try:
+        return request.app.state.knowledge_service.test_base(knowledge_base_key)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (ValueError, OSError, urllib.error.URLError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.get("/knowledge-bases/{knowledge_base_key}/documents")
+def list_knowledge_documents(knowledge_base_key: str, request: Request) -> dict:
+    try:
+        return {
+            "items": request.app.state.knowledge_service.list_documents(
+                knowledge_base_key
+            )
+        }
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post("/knowledge-bases/{knowledge_base_key}/documents")
+def ingest_knowledge_document(
+    knowledge_base_key: str, payload: KnowledgeDocumentInput, request: Request
+) -> dict:
+    try:
+        return request.app.state.knowledge_service.ingest_document(
+            knowledge_base_key, payload
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post("/knowledge-bases/{knowledge_base_key}/documents/upload")
+async def upload_knowledge_document(
+    knowledge_base_key: str,
+    file: Annotated[UploadFile, File(...)],
+    request: Request,
+) -> dict:
+    filename = file.filename or "document.txt"
+    suffix = Path(filename).suffix.casefold()
+    if suffix not in {".txt", ".md", ".csv", ".json", ".jsonl", ".yaml", ".yml"}:
+        raise HTTPException(
+            status_code=422,
+            detail="轻量内置库支持 TXT、Markdown、CSV、JSON、JSONL、YAML",
+        )
+    raw = await file.read(5_000_001)
+    if len(raw) > 5_000_000:
+        raise HTTPException(status_code=413, detail="单个知识文档不能超过 5 MB")
+    try:
+        content = raw.decode("utf-8-sig")
+        payload = KnowledgeDocumentInput(
+            title=Path(filename).stem,
+            content=content,
+            source_uri=f"upload://{filename}",
+            metadata={"filename": filename, "content_type": file.content_type},
+        )
+        return request.app.state.knowledge_service.ingest_document(
+            knowledge_base_key, payload
+        )
+    except UnicodeDecodeError as error:
+        raise HTTPException(status_code=422, detail="文档必须使用 UTF-8 编码") from error
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.delete(
+    "/knowledge-bases/{knowledge_base_key}/documents/{document_id}",
+    status_code=204,
+)
+def delete_knowledge_document(
+    knowledge_base_key: str, document_id: str, request: Request
+) -> Response:
+    try:
+        request.app.state.knowledge_service.delete_document(
+            knowledge_base_key, document_id
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(status_code=204)
+
+
+@router.post("/knowledge/search")
+def search_knowledge(payload: KnowledgeSearchInput, request: Request) -> dict:
+    try:
+        return request.app.state.knowledge_service.search(payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=f"知识库不可用：{error}") from error
+
+
 @router.get("/data-sources")
 def list_data_sources(request: Request) -> dict:
     return {"items": request.app.state.data_source_service.list()}
@@ -605,6 +775,39 @@ def pipeline_capabilities() -> dict:
     }
 
 
+@router.get("/pipelines")
+def list_pipelines(request: Request) -> dict:
+    return {"items": request.app.state.pipeline_service.list()}
+
+
+@router.put("/pipelines/{pipeline_key}")
+def save_pipeline(
+    pipeline_key: str,
+    payload: PipelineDefinition,
+    request: Request,
+    published: bool = False,
+) -> dict:
+    if pipeline_key != payload.key:
+        raise HTTPException(status_code=400, detail="Path key and payload key must match")
+    return request.app.state.pipeline_service.save(payload, published)
+
+
+@router.delete("/pipelines/{pipeline_key}", status_code=204)
+def delete_pipeline(pipeline_key: str, request: Request) -> Response:
+    try:
+        request.app.state.pipeline_service.delete(pipeline_key)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(status_code=204)
+
+
+@router.get("/pipeline-runs")
+def list_pipeline_runs(
+    request: Request, pipeline_key: str | None = None, limit: int = 50
+) -> dict:
+    return {"items": request.app.state.pipeline_service.runs(pipeline_key, limit)}
+
+
 @router.post("/pipelines/validate")
 def validate_pipeline(payload: PipelineDefinition) -> dict:
     return {
@@ -628,21 +831,58 @@ def preview_pipeline(payload: PipelineDefinition, request: Request, limit: int =
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+@router.get("/python-extensions")
+def list_python_extensions(request: Request) -> dict:
+    return {"items": request.app.state.python_extension_service.list()}
+
+
 @router.post("/python-extensions/validate")
-def validate_python_extension(payload: PythonExtensionManifest) -> dict:
-    warnings = []
-    if payload.network_access:
-        warnings.append("网络访问需要安全 Owner 单独审批")
-    if payload.writable_paths:
-        warnings.append("可写目录必须位于任务临时空间")
+def validate_python_extension(payload: PythonExtensionInput) -> dict:
+    return PythonExtensionService.validate(payload.code)
+
+
+@router.put("/python-extensions/{extension_key}")
+def save_python_extension(
+    extension_key: str, payload: PythonExtensionInput, request: Request
+) -> dict:
+    if extension_key != payload.key:
+        raise HTTPException(status_code=400, detail="Path key and payload key must match")
+    try:
+        return request.app.state.python_extension_service.save(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.delete("/python-extensions/{extension_key}", status_code=204)
+def delete_python_extension(extension_key: str, request: Request) -> Response:
+    try:
+        request.app.state.python_extension_service.delete(extension_key)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(status_code=204)
+
+
+@router.post("/python-extensions/{extension_key}/runs")
+def run_python_extension(
+    extension_key: str, payload: PythonRunInput, request: Request
+) -> dict:
+    try:
+        result = request.app.state.python_extension_service.run(
+            extension_key, payload.input_data
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if result["status"] == "failed":
+        raise HTTPException(status_code=422, detail=result["error"])
+    return result
+
+
+@router.get("/python-extension-runs")
+def list_python_extension_runs(
+    request: Request, extension_key: str | None = None, limit: int = 50
+) -> dict:
     return {
-        "valid": True,
-        "executable": payload.approved and not warnings,
-        "sandbox": {
-            "timeout_seconds": payload.timeout_seconds,
-            "memory_mb": payload.memory_mb,
-            "network_access": payload.network_access,
-            "writable_paths": payload.writable_paths,
-        },
-        "warnings": warnings,
+        "items": request.app.state.python_extension_service.runs(extension_key, limit)
     }

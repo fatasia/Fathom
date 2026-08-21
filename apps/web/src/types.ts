@@ -85,6 +85,56 @@ export interface SqlTemplate {
   updated_at: string
 }
 
+export interface SqlTemplateVersion {
+  version: number
+  created_at: string
+  snapshot: SqlTemplate
+}
+
+export interface SqlPreview {
+  template_key: string
+  columns: string[]
+  rows: Array<Record<string, unknown>>
+  row_count: number
+  limit: number
+  executed_at: string
+}
+
+export interface StoredPipeline {
+  key: string
+  label: string
+  source: string
+  target: string
+  mode: 'preview' | 'full' | 'incremental'
+  cursor_field?: string
+  steps: Array<{ operation: string; configuration: Record<string, unknown> }>
+  published: boolean
+  updated_at: string
+}
+
+export interface PythonExtension {
+  key: string
+  label: string
+  version: number
+  code: string
+  timeout_seconds: number
+  memory_mb: number
+  published: boolean
+  updated_at: string
+  limits?: Record<string, string>
+}
+
+export interface PythonExtensionRun {
+  run_id: string
+  extension_key: string
+  status: string
+  output: Record<string, unknown>
+  logs: string
+  error?: string
+  started_at: string
+  finished_at: string
+}
+
 export interface BackupItem {
   name: string
   size_bytes: number
@@ -112,6 +162,40 @@ export interface DataSource {
   enabled: boolean
   status: string
   last_tested_at?: string
+}
+
+export interface KnowledgeBase {
+  key: string
+  name: string
+  kind: 'internal' | 'external'
+  configuration: Record<string, unknown>
+  secret_reference?: string
+  has_secret?: boolean
+  enabled: boolean
+  document_count: number
+  updated_at: string
+}
+
+export interface KnowledgeDocument {
+  document_id: string
+  knowledge_base_key: string
+  title: string
+  source_uri: string
+  metadata: Record<string, unknown>
+  checksum: string
+  size: number
+  updated_at: string
+}
+
+export interface KnowledgeHit {
+  knowledge_base_key: string
+  document_id: string
+  title: string
+  content: string
+  source_uri: string
+  score: number
+  metadata: Record<string, unknown>
+  retrieval: string
 }
 
 export interface ModelProvider {
@@ -209,6 +293,7 @@ export interface EvaluationReport {
 }
 
 export interface PipelinePreview {
+  run_id: string
   key: string
   status: 'passed' | 'failed'
   source: string

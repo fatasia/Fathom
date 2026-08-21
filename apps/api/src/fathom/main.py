@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from fathom.adapters.storage.database import (
     create_session_factory,
+    remove_legacy_demo_data,
     seed_demo_object_instances,
     seed_demo_observations,
     seed_sql_templates,
@@ -21,10 +22,12 @@ from fathom.application.data_sources import DataSourceService
 from fathom.application.evaluation import EvaluationService
 from fathom.application.governance import GovernanceService
 from fathom.application.ingestion import IngestionService
+from fathom.application.knowledge import KnowledgeService
 from fathom.application.model_gateway import ModelGatewayService
 from fathom.application.object_context import ObjectContextService
 from fathom.application.pipelines import PipelineService
 from fathom.application.platform_tools import BackupService, SqlTemplateService
+from fathom.application.python_extensions import PythonExtensionService
 from fathom.application.query_service import QueryService
 from fathom.application.security import (
     AccessController,
@@ -52,8 +55,11 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
             )
         for contract in contracts:
             repository.replace_contract(contract)
-        seed_demo_observations(session_factory)
-        seed_demo_object_instances(session_factory)
+        if active_settings.environment == "test":
+            seed_demo_observations(session_factory)
+            seed_demo_object_instances(session_factory)
+        else:
+            remove_legacy_demo_data(session_factory)
         seed_sql_templates(session_factory)
         app.state.settings = active_settings
         app.state.session_factory = session_factory
@@ -61,7 +67,10 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         app.state.relations = [
             relation for contract in contracts for relation in contract.relations
         ]
-        app.state.query_service = QueryService(session_factory, repository)
+        app.state.knowledge_service = KnowledgeService(session_factory)
+        app.state.query_service = QueryService(
+            session_factory, repository, app.state.knowledge_service
+        )
         app.state.evaluation_service = EvaluationService(session_factory, app.state.query_service)
         app.state.governance_service = GovernanceService(session_factory)
         app.state.governance_service.seed()
@@ -70,6 +79,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         app.state.backup_service = BackupService(active_settings)
         app.state.data_source_service = DataSourceService(session_factory)
         app.state.pipeline_service = PipelineService(session_factory)
+        app.state.python_extension_service = PythonExtensionService(session_factory)
         app.state.object_context_service = ObjectContextService(session_factory)
         app.state.agent_mesh_runtime = AgentMeshRuntime(
             session_factory,
