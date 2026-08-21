@@ -38,7 +38,12 @@ try {
     )
     Set-Content -LiteralPath (Join-Path $stagingRoot 'PACKAGE.txt') -Value $manifest -Encoding utf8
 
-    Compress-Archive -LiteralPath $stagingRoot -DestinationPath $archivePath -CompressionLevel Optimal
+    # bsdtar emits portable UTF-8 ZIP entry names; Compress-Archive can corrupt
+    # Chinese document names when the archive is unpacked on Linux.
+    & tar -a -cf $archivePath -C $stagingParent $packageName
+    if ($LASTEXITCODE -ne 0) {
+        throw '无法创建发布 ZIP'
+    }
     $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath "$archivePath.sha256" -Value "$hash  $packageName.zip" -Encoding ascii
     Get-Item -LiteralPath $archivePath | Select-Object FullName, Length, LastWriteTime
