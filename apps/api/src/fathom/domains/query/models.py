@@ -54,6 +54,7 @@ class QueryAttachment(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
+    conversation_id: str | None = Field(default=None, pattern=r"^chat_[a-f0-9]{20}$")
     scope: dict[str, str] = Field(default_factory=dict)
     semantic_version: str | None = None
     attachments: list[QueryAttachment] = Field(default_factory=list, max_length=5)

@@ -88,6 +88,26 @@ class QueryTraceRecord(Base):
     status: Mapped[str] = mapped_column(String(32))
 
 
+class ConversationRecord(Base):
+    __tablename__ = "conversations"
+
+    conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class ConversationTurnRecord(Base):
+    __tablename__ = "conversation_turns"
+
+    turn_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    question: Mapped[str] = mapped_column(String(1000))
+    attachments: Mapped[list] = mapped_column(JSON, default=list)
+    response: Mapped[dict] = mapped_column(JSON)
+
+
 class AuditEventRecord(Base):
     __tablename__ = "audit_events"
 

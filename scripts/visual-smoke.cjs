@@ -3,7 +3,7 @@ const path = require('node:path')
 const fs = require('node:fs')
 
 async function main() {
-  const outputDirectory = path.resolve('artifacts', 'visual-smoke')
+  const outputDirectory = path.resolve('docs', 'assets', 'screenshots')
   fs.mkdirSync(outputDirectory, { recursive: true })
   const browser = await chromium.launch({ channel: 'chrome', headless: true })
   const context = await browser.newContext({
@@ -18,11 +18,15 @@ async function main() {
   })
 
   await page.goto('http://127.0.0.1:8000', { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: '新对话', exact: true }).click()
   await page.screenshot({ path: path.join(outputDirectory, '01-ask.png'), fullPage: true })
   await page.getByRole('button', { name: '昨天的 OEE 是多少？', exact: true }).click()
   await page.getByText('暂无真实数据', { exact: true }).waitFor()
-  await page.getByRole('button', { name: '查看计算过程', exact: true }).click()
+  await page.getByRole('button', { name: '思考与执行', exact: true }).click()
   await page.screenshot({ path: path.join(outputDirectory, '01b-ask-result.png'), fullPage: true })
+
+  const conversationCount = await page.locator('.history-item').count()
+  if (conversationCount < 1) throw new Error('Conversation history was not persisted')
 
   const primaryScreens = [
     ['业务知识', '02-ontology.png'],

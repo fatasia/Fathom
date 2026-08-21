@@ -100,6 +100,33 @@ def test_query_stream_exposes_progress_deltas_and_complete_result(tmp_path: Path
     assert '"intent": "greeting"' in body
 
 
+def test_conversation_history_lifecycle_persists_completed_turns(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post("/api/v1/query/conversations", json={"title": "新对话"})
+        conversation_id = created.json()["conversation_id"]
+        streamed = client.post(
+            "/api/v1/query/stream",
+            json={"question": "你好", "conversation_id": conversation_id},
+        )
+        listed = client.get("/api/v1/query/conversations")
+        detail = client.get(f"/api/v1/query/conversations/{conversation_id}")
+        renamed = client.put(
+            f"/api/v1/query/conversations/{conversation_id}",
+            json={"title": "设备效率讨论"},
+        )
+        deleted = client.delete(f"/api/v1/query/conversations/{conversation_id}")
+        missing = client.get(f"/api/v1/query/conversations/{conversation_id}")
+
+    assert created.status_code == 200
+    assert streamed.status_code == 200
+    assert listed.json()["items"][0]["title"] == "你好"
+    assert listed.json()["items"][0]["turn_count"] == 1
+    assert detail.json()["turns"][0]["response"]["plan"]["intent"] == "greeting"
+    assert renamed.json()["title"] == "设备效率讨论"
+    assert deleted.status_code == 204
+    assert missing.status_code == 404
+
+
 def test_query_attachment_extracts_utf8_text(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post(

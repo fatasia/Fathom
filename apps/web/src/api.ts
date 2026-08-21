@@ -4,6 +4,8 @@ import type {
   AgentRun,
   BackupItem,
   ConnectorType,
+  ConversationDetail,
+  ConversationSummary,
   DataSource,
   DifyIntegrationStatus,
   EffectiveConfiguration,
@@ -80,6 +82,7 @@ export async function uploadQueryAttachment(file: File): Promise<QueryAttachment
 export async function askDataStream(
   question: string,
   attachments: QueryAttachment[],
+  conversationId: string,
   callbacks: {
     onProgress: (stage: string, message: string) => void
     onDelta: (text: string) => void
@@ -88,7 +91,7 @@ export async function askDataStream(
   const response = await fetch('/api/v1/query/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, attachments }),
+    body: JSON.stringify({ question, attachments, conversation_id: conversationId }),
   })
   if (!response.ok || !response.body) {
     const payload = await response.json().catch(() => ({})) as { detail?: string }
@@ -119,6 +122,41 @@ export async function askDataStream(
   }
   if (!completed) throw new Error('流式回答意外中断，请重试。')
   return completed
+}
+
+export async function fetchConversations(): Promise<ConversationSummary[]> {
+  return (await request<{ items: ConversationSummary[] }>(
+    '/api/v1/query/conversations',
+  )).items
+}
+
+export function createConversation(title = '新对话'): Promise<ConversationSummary> {
+  return request('/api/v1/query/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function fetchConversation(conversationId: string): Promise<ConversationDetail> {
+  return request(`/api/v1/query/conversations/${encodeURIComponent(conversationId)}`)
+}
+
+export function renameConversation(
+  conversationId: string,
+  title: string,
+): Promise<ConversationSummary> {
+  return request(`/api/v1/query/conversations/${encodeURIComponent(conversationId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export async function deleteConversation(conversationId: string): Promise<void> {
+  const response = await fetch(
+    `/api/v1/query/conversations/${encodeURIComponent(conversationId)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) throw new Error(`删除会话失败：${response.status}`)
 }
 
 export function fetchDifyIntegrationStatus(): Promise<DifyIntegrationStatus> {

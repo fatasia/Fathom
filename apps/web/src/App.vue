@@ -44,10 +44,14 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import {
   askDataStream,
   createBackup,
+  createConversation,
+  deleteConversation,
   deleteSqlTemplate,
   fetchBackups,
   fetchAgentMesh,
   fetchConnectorTypes,
+  fetchConversation,
+  fetchConversations,
   fetchDataSources,
   fetchDifyIntegrationStatus,
   fetchLatestEvaluation,
@@ -85,6 +89,7 @@ import {
   deleteKnowledgeDocument,
   searchKnowledge,
   restoreBackup,
+  renameConversation,
   probeModelProvider,
   validateSqlTemplate,
   validatePythonExtension,
@@ -96,6 +101,7 @@ import type {
   AssetKind,
   BackupItem,
   ConnectorType,
+  ConversationSummary,
   DataSource,
   DifyIntegrationStatus,
   EffectiveConfiguration,
@@ -191,6 +197,10 @@ const modelPanelOpen = ref(false)
 const modelMessage = ref('')
 const conversationHistory = ref<ConversationTurn[]>([])
 const conversationEnd = ref<HTMLElement | null>(null)
+const conversations = ref<ConversationSummary[]>([])
+const activeConversationId = ref('')
+const conversationSearch = ref('')
+const conversationHistoryBusy = ref(false)
 const pendingAttachments = ref<QueryAttachment[]>([])
 const attachmentBusy = ref(false)
 const objectInstances = ref<ObjectInstance[]>([])
@@ -297,6 +307,14 @@ const filteredAssets = computed(() => {
     const haystack = [asset.label, asset.key, asset.description, ...asset.aliases].join(' ').toLowerCase()
     return matchesKind && (!query || haystack.includes(query))
   })
+})
+
+const filteredConversations = computed(() => {
+  const query = conversationSearch.value.trim().toLowerCase()
+  if (!query) return conversations.value
+  return conversations.value.filter((item) =>
+    `${item.title} ${item.last_question}`.toLowerCase().includes(query),
+  )
 })
 
 function metricLabelOf(answer: AskResult) {
@@ -575,6 +593,19 @@ async function loadEvaluation() {
   semanticChanges.value = changes
 }
 
+async function runGoldenSet() {
+  governanceBusy.value = 'golden-set'
+  governanceMessage.value = '正在运行黄金问题集…'
+  try {
+    evaluationReport.value = await runCertifiedEvaluation()
+    governanceMessage.value = evaluationReport.value.passed
+      ? `黄金问题集通过：${evaluationReport.value.correct} / ${evaluationReport.value.total}`
+      : `黄金问题集未通过：${evaluationReport.value.failures.length} 个失败样本`
+  } finally {
+    governanceBusy.value = ''
+  }
+}
+
 const pendingChangeCount = computed(
   () => semanticChanges.value.filter((item) => ['candidate', 'in_review', 'approved'].includes(item.status)).length,
 )
@@ -656,7 +687,7 @@ async function publishChange(change: SemanticChange) {
   try {
     evaluationReport.value = await runCertifiedEvaluation()
     if (!evaluationReport.value.passed) {
-      governanceMessage.value = `发布已停止：${evaluationReport.value.failures.length} 个认证问题未通过`
+      governanceMessage.value = `发布已停止：${evaluationReport.value.failures.length} 个黄金问题未通过`
       return
     }
     const updated = await decideSemanticChange(change.change_id, 'publish', '自动评测通过后直接发布')
@@ -669,6 +700,86 @@ async function publishChange(change: SemanticChange) {
     governanceMessage.value = publishError instanceof Error ? publishError.message : '发布失败'
   } finally {
     governanceBusy.value = ''
+  }
+}
+
+function conversationTimeLabel(value: string) {
+  const date = new Date(value)
+  const now = new Date()
+  const sameDay = date.toDateString() === now.toDateString()
+  if (sameDay) return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  return date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+}
+
+async function loadConversationIndex(openLatest = false) {
+  conversations.value = await fetchConversations()
+  if (openLatest && !activeConversationId.value && conversations.value.length) {
+    await openConversation(conversations.value[0].conversation_id)
+  }
+}
+
+async function openConversation(conversationId: string) {
+  if (isLoading.value || conversationId === activeConversationId.value) return
+  conversationHistoryBusy.value = true
+  error.value = ''
+  try {
+    const conversation = await fetchConversation(conversationId)
+    activeConversationId.value = conversation.conversation_id
+    conversationHistory.value = conversation.turns.map((turn) => ({
+      id: turn.turn_id,
+      question: turn.question,
+      attachments: turn.attachments.map((attachment) => ({
+        ...attachment,
+        text: '',
+        data_url: '',
+      })),
+      result: turn.response,
+      error: '',
+      evidenceOpen: false,
+      executionOpen: false,
+      streamedAnswer: turn.response.answer,
+      stage: 'compute',
+      stageMessage: '已完成',
+    }))
+    result.value = conversationHistory.value.at(-1)?.result ?? null
+    await nextTick()
+    conversationEnd.value?.scrollIntoView({ block: 'end' })
+  } catch (historyError) {
+    error.value = historyError instanceof Error ? historyError.message : '会话加载失败'
+  } finally {
+    conversationHistoryBusy.value = false
+  }
+}
+
+function startNewConversation() {
+  if (isLoading.value) return
+  activeConversationId.value = ''
+  conversationHistory.value = []
+  result.value = null
+  question.value = ''
+  pendingAttachments.value = []
+  error.value = ''
+}
+
+async function editConversation(item: ConversationSummary) {
+  const title = window.prompt('修改会话名称', item.title)?.trim()
+  if (!title || title === item.title) return
+  try {
+    await renameConversation(item.conversation_id, title)
+    await loadConversationIndex()
+  } catch (renameError) {
+    error.value = renameError instanceof Error ? renameError.message : '重命名失败'
+  }
+}
+
+async function removeConversation(item: ConversationSummary) {
+  if (!window.confirm(`删除会话“${item.title}”？此操作不可恢复。`)) return
+  try {
+    await deleteConversation(item.conversation_id)
+    if (activeConversationId.value === item.conversation_id) startNewConversation()
+    await loadConversationIndex()
+  } catch (deleteError) {
+    error.value = deleteError instanceof Error ? deleteError.message : '删除会话失败'
   }
 }
 
@@ -696,7 +807,12 @@ async function submitQuestion(nextQuestion?: string) {
   await nextTick()
   conversationEnd.value?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   try {
-    result.value = await askDataStream(content, attachments, {
+    if (!activeConversationId.value) {
+      const created = await createConversation()
+      activeConversationId.value = created.conversation_id
+      conversations.value = [created, ...conversations.value]
+    }
+    result.value = await askDataStream(content, attachments, activeConversationId.value, {
       onProgress(stage, message) {
         turn.stage = stage
         turn.stageMessage = message
@@ -706,6 +822,7 @@ async function submitQuestion(nextQuestion?: string) {
       },
     })
     turn.result = result.value
+    await loadConversationIndex()
   } catch (requestError) {
     turn.error = requestError instanceof Error ? requestError.message : '分析失败，请稍后重试。'
   } finally {
@@ -805,16 +922,6 @@ function switchWorkspace(next: Workspace) {
   if (next === 'agents') void loadAgentMesh()
   if (next === 'settings') void loadModelGateway()
   if (next === 'governance') void loadEvaluation()
-}
-
-function resetConversation() {
-  conversationHistory.value = []
-  result.value = null
-  question.value = ''
-  pendingAttachments.value = []
-  error.value = ''
-  evidenceOpen.value = false
-  executionOpen.value = false
 }
 
 function applyModelPreset() {
@@ -1084,6 +1191,7 @@ onMounted(async () => {
     loadPlatformData(),
     loadModelGateway(),
     loadEvaluation(),
+    loadConversationIndex(true),
   ])
 })
 </script>
@@ -1162,15 +1270,34 @@ onMounted(async () => {
       </header>
 
       <section v-if="workspace === 'ask'" class="workspace ask-workspace">
-        <div class="ask-hero">
-          <div><span class="eyebrow">FATHOM CONVERSATION</span><h1>问数</h1><p>直接对话。系统自动理解对象、指标和时间，并给出可信证据。</p></div>
-          <button v-if="conversationHistory.length" class="quiet-action" @click="resetConversation"><Plus :size="15" />新对话</button>
-        </div>
+        <div class="conversation-layout">
+          <aside class="conversation-history" aria-label="对话历史">
+            <button class="new-conversation" type="button" @click="startNewConversation"><Plus :size="16" />新对话</button>
+            <label class="history-search"><Search :size="14" /><input v-model="conversationSearch" placeholder="搜索对话" /></label>
+            <div class="history-list">
+              <button
+                v-for="item in filteredConversations"
+                :key="item.conversation_id"
+                type="button"
+                class="history-item"
+                :class="{ active: item.conversation_id === activeConversationId }"
+                @click="openConversation(item.conversation_id)"
+              >
+                <span class="history-copy"><strong>{{ item.title }}</strong><small>{{ item.last_question || '尚未提问' }}</small></span>
+                <span class="history-meta">{{ conversationTimeLabel(item.updated_at) }}</span>
+                <span class="history-actions">
+                  <span role="button" tabindex="0" title="重命名" @click.stop="editConversation(item)" @keydown.enter.stop="editConversation(item)"><FileCode2 :size="13" /></span>
+                  <span role="button" tabindex="0" title="删除" @click.stop="removeConversation(item)" @keydown.enter.stop="removeConversation(item)"><Trash2 :size="13" /></span>
+                </span>
+              </button>
+              <p v-if="!filteredConversations.length" class="history-empty">{{ conversationSearch ? '没有匹配的对话' : '暂无历史对话' }}</p>
+            </div>
+          </aside>
 
-        <div class="chat-shell">
-          <div v-if="!conversationHistory.length" class="chat-welcome">
+          <div class="chat-stage">
+          <div v-if="conversationHistoryBusy" class="chat-welcome"><div class="dive-loader"><span></span><span></span><span></span></div><p>正在载入对话</p></div>
+          <div v-else-if="!conversationHistory.length" class="chat-welcome">
             <div class="assistant-avatar"><Waves :size="24" /></div>
-            <h2>你好，我是 FATHOM</h2>
             <p>可以问企业数据、指标定义、分析方法或平台使用问题。无需选择范围，也不用填写内部 ID。</p>
             <div class="quick-questions">
               <button @click="submitQuestion('OEE 是什么，应该怎样计算？')">OEE 是什么，应该怎样计算？</button>
@@ -1179,7 +1306,7 @@ onMounted(async () => {
             </div>
           </div>
 
-          <div class="conversation-stream" aria-live="polite">
+          <div v-if="conversationHistory.length" class="conversation-stream" aria-live="polite">
             <section v-for="turn in conversationHistory" :key="turn.id" class="conversation-turn">
               <div class="user-message">
                 <div class="message-avatar">R</div>
@@ -1257,7 +1384,6 @@ onMounted(async () => {
             <textarea v-model="question" aria-label="输入要查询的业务问题" placeholder="给 FATHOM 发消息…" rows="1" @keydown.enter="submitOnEnter"></textarea>
             <div class="question-footer">
               <div class="question-options">
-                <span class="auto-understanding"><Sparkles :size="13" />自动理解范围</span>
                 <label class="vision-upload" title="上传图片、PDF、Word、表格或文本"><input type="file" multiple accept="image/jpeg,image/png,image/webp,.pdf,.docx,.txt,.md,.csv,.json,.jsonl,.yaml,.yml" @change="handleChatAttachments" /><UploadCloud :size="14" />{{ attachmentBusy ? '读取中…' : '附件' }}</label>
                 <span class="keyboard-hint">Enter 发送 · Shift+Enter 换行</span>
               </div>
@@ -1265,7 +1391,7 @@ onMounted(async () => {
             </div>
           </form>
           <p v-if="error" class="composer-error">{{ error }}</p>
-          <p class="chat-disclaimer">企业数值只采用真实数据和已发布口径；通用回答可能由模型生成，请结合业务语境判断。</p>
+          </div>
         </div>
       </section>
 
@@ -1514,6 +1640,11 @@ onMounted(async () => {
         <div class="governance-summary"><article><span>待发布建议</span><strong>{{ String(pendingChangeCount).padStart(2, '0') }}</strong><small>点击即可自动评测并发布</small></article><article><span>语义覆盖率</span><strong>87%</strong><small>生产执行域</small></article><article><span>最近评测</span><strong>{{ evaluationReport ? `${evaluationReport.accuracy_percent}%` : '待运行' }}</strong><small v-if="evaluationReport">基线 {{ evaluationReport.correct }} / {{ evaluationReport.total }} · 门槛 ≥99%</small><small v-else>发布时自动运行</small></article><article><span>失败样本</span><strong>{{ evaluationReport?.failures.length ?? '—' }}</strong><small>{{ evaluationReport?.passed ? '允许直接发布' : '失败时自动拦截' }}</small></article></div>
         <p v-if="evaluationReport" class="governance-scope-note">{{ evaluationReport.scope_note }} · {{ evaluationReport.semantic_version }}</p>
         <div v-if="evaluationReport?.gates" class="evaluation-gates"><span v-for="(gate, key) in evaluationReport.gates" :key="key" :data-passed="gate.passed"><Check :size="12" />{{ evaluationGateLabels[key] ?? key }} · {{ gate.total }} 项</span></div>
+        <section class="golden-set-card">
+          <div><span class="eyebrow">GOLDEN QUESTION SET</span><h2>黄金问题集</h2><p>覆盖语义规划、确定性数值、证据完整性和未知问题安全拒答。</p></div>
+          <div class="golden-set-stats"><span><b>100</b>语义规划</span><span><b>5</b>数值基线</span><span><b>5</b>证据校验</span><span><b>10</b>安全拒答</span></div>
+          <button class="primary-action" :disabled="governanceBusy === 'golden-set'" @click="runGoldenSet"><Play :size="14" />{{ governanceBusy === 'golden-set' ? '运行中…' : '运行黄金问题集' }}</button>
+        </section>
         <div class="suggestion-list">
           <article v-for="change in semanticChanges" :key="change.change_id" :class="{ expanded: selectedChangeId === change.change_id }">
             <span class="suggestion-icon"><GitBranch v-if="change.kind !== 'alias'" :size="18" /><BookOpen v-else :size="18" /></span>

@@ -15,6 +15,7 @@ from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFil
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fathom.application.agent_mesh import AgentRunInput, agent_mesh_overview
 from fathom.application.capabilities import detect_capabilities
+from fathom.application.conversations import ConversationCreate, ConversationRename
 from fathom.application.data_sources import DataSourceInput, connector_catalog
 from fathom.application.governance import GovernanceDecision, SemanticAssetProposal
 from fathom.application.ingestion import (
@@ -400,14 +401,61 @@ def get_object_context(object_id: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail=f"Object not found: {error}") from error
 
 
+@router.get("/query/conversations")
+def list_conversations(request: Request, limit: int = 100) -> dict:
+    return {"items": request.app.state.conversation_service.list(limit)}
+
+
+@router.post("/query/conversations")
+def create_conversation(payload: ConversationCreate, request: Request) -> dict:
+    return request.app.state.conversation_service.create(payload.title)
+
+
+@router.get("/query/conversations/{conversation_id}")
+def get_conversation(conversation_id: str, request: Request) -> dict:
+    try:
+        return request.app.state.conversation_service.get(conversation_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.put("/query/conversations/{conversation_id}")
+def rename_conversation(
+    conversation_id: str,
+    payload: ConversationRename,
+    request: Request,
+) -> dict:
+    try:
+        return request.app.state.conversation_service.rename(conversation_id, payload.title)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.delete("/query/conversations/{conversation_id}", status_code=204)
+def delete_conversation(conversation_id: str, request: Request) -> Response:
+    try:
+        request.app.state.conversation_service.delete(conversation_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(status_code=204)
+
+
 @router.post("/query/ask", response_model=AskResponse)
 def ask_data(payload: AskRequest, request: Request) -> AskResponse:
     try:
-        return request.app.state.query_service.ask(
+        result = request.app.state.query_service.ask(
             payload, getattr(request.state, "authorized_objects", None)
         )
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
+    if payload.conversation_id:
+        try:
+            request.app.state.conversation_service.record_turn(
+                payload.conversation_id, payload, result
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+    return result
 
 
 @router.post("/query/answer", response_class=PlainTextResponse)
@@ -419,6 +467,13 @@ def ask_data_text(payload: AskRequest, request: Request) -> PlainTextResponse:
         )
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
+    if payload.conversation_id:
+        try:
+            request.app.state.conversation_service.record_turn(
+                payload.conversation_id, payload, result
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
     return PlainTextResponse(
         result.answer,
         headers={
@@ -431,6 +486,12 @@ def ask_data_text(payload: AskRequest, request: Request) -> PlainTextResponse:
 @router.post("/query/stream")
 def ask_data_stream(payload: AskRequest, request: Request) -> StreamingResponse:
     """Stream progress, answer deltas and the final evidence-bearing result over SSE."""
+
+    if payload.conversation_id:
+        try:
+            request.app.state.conversation_service.get(payload.conversation_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
 
     def event_stream():
         progress = [
@@ -456,6 +517,10 @@ def ask_data_stream(payload: AskRequest, request: Request) -> StreamingResponse:
         for index in range(0, len(result.answer), 18):
             delta = json.dumps({"text": result.answer[index : index + 18]}, ensure_ascii=False)
             yield f"event: delta\ndata: {delta}\n\n"
+        if payload.conversation_id:
+            request.app.state.conversation_service.record_turn(
+                payload.conversation_id, payload, result
+            )
         complete = json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
         yield f"event: complete\ndata: {complete}\n\n"
 

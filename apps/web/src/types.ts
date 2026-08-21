@@ -81,6 +81,25 @@ export interface AskResult {
   data_freshness: string
 }
 
+export interface ConversationSummary {
+  conversation_id: string
+  title: string
+  created_at: string
+  updated_at: string
+  turn_count: number
+  last_question: string
+}
+
+export interface ConversationDetail extends ConversationSummary {
+  turns: Array<{
+    turn_id: string
+    created_at: string
+    question: string
+    attachments: Array<{ name: string; content_type: string }>
+    response: AskResult
+  }>
+}
+
 export interface SqlTemplate {
   key: string
   label: string

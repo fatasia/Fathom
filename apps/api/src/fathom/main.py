@@ -18,6 +18,7 @@ from fathom.adapters.storage.database import (
 from fathom.adapters.storage.semantic_repository import SqlSemanticRepository
 from fathom.application.agent_mesh import AgentMeshRuntime
 from fathom.application.contract_loader import load_contracts
+from fathom.application.conversations import ConversationService
 from fathom.application.data_sources import DataSourceService
 from fathom.application.evaluation import EvaluationService
 from fathom.application.governance import GovernanceService
@@ -68,6 +69,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
             relation for contract in contracts for relation in contract.relations
         ]
         app.state.knowledge_service = KnowledgeService(session_factory)
+        app.state.conversation_service = ConversationService(session_factory)
         app.state.model_gateway_service = ModelGatewayService(session_factory)
         app.state.model_gateway_service.seed_from_configuration(active_settings.model_gateway)
         app.state.query_service = QueryService(
