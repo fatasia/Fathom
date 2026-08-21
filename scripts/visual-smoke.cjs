@@ -6,7 +6,11 @@ async function main() {
   const outputDirectory = path.resolve('artifacts', 'visual-smoke')
   fs.mkdirSync(outputDirectory, { recursive: true })
   const browser = await chromium.launch({ channel: 'chrome', headless: true })
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 1000 },
+    permissions: ['clipboard-read', 'clipboard-write'],
+  })
+  const page = await context.newPage()
   const runtimeErrors = []
   page.on('pageerror', (error) => runtimeErrors.push(error.message))
   page.on('console', (message) => {
@@ -29,6 +33,18 @@ async function main() {
     await page.getByRole('button', { name: label, exact: true }).click()
     await page.waitForTimeout(250)
     if (label === '数据接入') {
+      const integrationCount = await page.locator('.connection-grid button').count()
+      if (integrationCount !== 3) throw new Error(`Expected 3 one-click integrations, got ${integrationCount}`)
+      await page.getByRole('button', { name: /工作流 \/ 低代码平台/ }).click()
+      const openApiClipboard = await page.evaluate(() => navigator.clipboard.readText())
+      if (!openApiClipboard.includes('/api/v1/integrations/dify/openapi.yaml')) {
+        throw new Error(`OpenAPI clipboard is invalid: ${openApiClipboard}`)
+      }
+      await page.getByRole('button', { name: /Agent 软件/ }).click()
+      const agentClipboard = await page.evaluate(() => navigator.clipboard.readText())
+      if (!agentClipboard.includes('mcpServers') || !agentClipboard.includes('a2aAgentCard')) {
+        throw new Error(`Agent clipboard is invalid: ${agentClipboard}`)
+      }
       const visibleConnectorCount = await page.locator('.connector-matrix article').count()
       if (visibleConnectorCount !== 6) throw new Error(`Expected 6 default connectors, got ${visibleConnectorCount}`)
       await page.getByRole('button', { name: /查看全部 \d+ 种/ }).click()

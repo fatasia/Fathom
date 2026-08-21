@@ -43,7 +43,7 @@ class SemanticPlanner:
         assets = self._repository.list_assets()
         metrics = [asset for asset in assets if asset.kind == AssetKind.METRIC]
         matched_metric = self._match_metric(question, metrics)
-        object_match = self._match_object(question, request.scope)
+        object_match = self._match_object(question, request.scope, matched_metric)
 
         if object_match is None:
             anchors = (
@@ -76,7 +76,7 @@ class SemanticPlanner:
                         summary="执行已阻断",
                     ),
                 ],
-                clarification="请指定工厂、产线、设备或在调用 scope 中传入 object_id。",
+                clarification=self._object_clarification(matched_metric),
                 validations=["未识别业务对象，执行已阻断"],
             )
 
@@ -169,7 +169,12 @@ class SemanticPlanner:
         candidates.sort(key=lambda item: item[0], reverse=True)
         return candidates[0][1]
 
-    def _match_object(self, question: str, scope: dict[str, str]) -> tuple[str, str] | None:
+    def _match_object(
+        self,
+        question: str,
+        scope: dict[str, str],
+        matched_metric: SemanticAsset | None,
+    ) -> tuple[str, str] | None:
         with self._session_factory() as session:
             for key in ("object_id", "line", "equipment", "plant"):
                 scoped_id = scope.get(key)
@@ -208,9 +213,39 @@ class SemanticPlanner:
                     (type_priority.get(instance.object_type, 2), max(matches), instance)
                 )
         if not candidates:
+            metric_objects = self._metric_object_candidates(matched_metric)
+            if len(metric_objects) == 1:
+                return metric_objects[0].object_id, metric_objects[0].label
             return None
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return candidates[0][2].object_id, candidates[0][2].label
+
+    def _metric_object_candidates(
+        self, matched_metric: SemanticAsset | None
+    ) -> list[ObjectInstanceRecord]:
+        if matched_metric is None:
+            return []
+        with self._session_factory() as session:
+            object_ids = select(MetricObservationRecord.object_id).where(
+                MetricObservationRecord.metric_key == matched_metric.key
+            )
+            return list(
+                session.scalars(
+                    select(ObjectInstanceRecord)
+                    .where(
+                        ObjectInstanceRecord.state == "active",
+                        ObjectInstanceRecord.object_id.in_(object_ids),
+                    )
+                    .order_by(ObjectInstanceRecord.label)
+                ).all()
+            )
+
+    def _object_clarification(self, matched_metric: SemanticAsset | None) -> str:
+        candidates = self._metric_object_candidates(matched_metric)
+        if candidates:
+            labels = "、".join(item.label for item in candidates[:5])
+            return f"你想看哪个范围：{labels}？直接说业务名称即可。"
+        return "请告诉我想看的工厂、产线或设备名称，例如“一号线”；无需填写技术 ID。"
 
 
 class QueryService:

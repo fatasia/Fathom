@@ -59,8 +59,8 @@ pnpm dev
 ## Dify 联调
 
 FATHOM 自身无需 Docker；完整 Dify Community Edition 按官方方式使用 Docker Compose。
-本机联调说明见 [docs/DIFY-LOCAL.md](docs/DIFY-LOCAL.md)，OpenAPI 工具定义见
-`integrations/dify/fathom-openapi.yaml`。
+完整接入步骤见 [docs/Dify接入指南.md](docs/Dify接入指南.md)，本机运行说明见
+[docs/DIFY-LOCAL.md](docs/DIFY-LOCAL.md)，OpenAPI 工具定义见 `integrations/dify/fathom-openapi.yaml`。
 
 ## 验证
 
@@ -88,4 +88,4 @@ data/           本地运行数据与备份（不提交 Git）
 - 上层模型不能直接获得数据库凭证，也不能执行任意 SQL。
 - 语义不明确时澄清或拒答；只有通过对象、指标、权限和资源预算校验的计划才能执行。
 - “99%”以已认证业务域的黄金问题集验收；确定性指标计算必须与基准 SQL 一致。
-- 任何生产语义变更经过影响分析、回归评测、审批、灰度和可回滚发布。
+- 生产语义点击发布后自动执行回归评测；通过即发布，并保留审计和回滚点。

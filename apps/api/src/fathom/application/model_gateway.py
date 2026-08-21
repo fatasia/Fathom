@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+import certifi
 from fathom.adapters.storage.database import ModelProviderRecord, ModelRouteRecord
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from sqlalchemy import select
@@ -408,12 +410,16 @@ class ModelGatewayService:
 
     def _fetch_models(self, record: ModelProviderRecord) -> list[str]:
         url = f"{record.base_url.rstrip('/')}/models"
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "User-Agent": "FATHOM/0.1"}
         secret = self.secret_store.resolve(record.secret_reference)
         if secret:
             headers["Authorization"] = f"Bearer {secret}"
         request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+        with urllib.request.urlopen(  # noqa: S310
+            request,
+            timeout=5,
+            context=self._ssl_context(),
+        ) as response:
             payload = json.loads(response.read(2_000_000))
         return [str(item.get("id")) for item in payload.get("data", []) if item.get("id")]
 
@@ -447,7 +453,11 @@ class ModelGatewayService:
     def _post_json(
         self, record: ModelProviderRecord, path: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "FATHOM/0.1",
+        }
         secret = self.secret_store.resolve(record.secret_reference)
         if secret:
             if record.provider_type == "anthropic":
@@ -460,8 +470,19 @@ class ModelGatewayService:
             headers=headers,
             data=json.dumps(payload).encode("utf-8"),
         )
-        with urllib.request.urlopen(request, timeout=45) as response:  # noqa: S310
+        timeout = int(record.parameters.get("timeout_seconds", 45))
+        with urllib.request.urlopen(  # noqa: S310
+            request,
+            timeout=timeout,
+            context=self._ssl_context(),
+        ) as response:
             return json.loads(response.read(2_000_000))
+
+    @staticmethod
+    def _ssl_context() -> ssl.SSLContext:
+        """Use an explicit, current CA bundle across Windows and server installs."""
+
+        return ssl.create_default_context(cafile=certifi.where())
 
     @staticmethod
     def _mode_path(mode: str) -> str:

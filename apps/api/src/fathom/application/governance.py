@@ -45,7 +45,7 @@ class GovernanceService:
         "start_review": ({"candidate"}, "in_review"),
         "approve": ({"in_review"}, "approved"),
         "reject": ({"candidate", "in_review"}, "rejected"),
-        "publish": ({"approved"}, "published"),
+        "publish": ({"candidate", "in_review", "approved"}, "published"),
         "rollback": ({"published"}, "rolled_back"),
     }
 
@@ -188,14 +188,14 @@ class GovernanceService:
                     f"允许状态：{', '.join(sorted(allowed))}"
                 )
             evaluation = None
-            if decision.action == "approve":
+            if decision.action in {"approve", "publish"}:
                 evaluation = session.scalar(
                     select(EvaluationRunRecord)
                     .order_by(EvaluationRunRecord.created_at.desc())
                     .limit(1)
                 )
                 if evaluation is None or not evaluation.passed:
-                    raise ValueError("批准前必须通过最新认证问题集，门槛为 99%")
+                    raise ValueError("发布前必须通过最新认证问题集，门槛为 99%")
                 change.evaluation_run_id = evaluation.run_id
             if decision.action == "publish":
                 self._apply_patch(session, change)

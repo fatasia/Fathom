@@ -1,5 +1,7 @@
 # Dify 本机联调
 
+面向使用者的完整导入、使用和排障步骤见 [Dify 接入指南](Dify接入指南.md)。
+
 FATHOM 本体、语义、权限和数据源均独立运行；Dify 只作为上层 Agent / Workflow 消费
 FATHOM 的受控工具，不保存企业事实源凭证。
 

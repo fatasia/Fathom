@@ -116,7 +116,7 @@ BUILTIN_AGENTS: list[dict[str, Any]] = [
         "key": "evolution_steward",
         "name": "演化学习智能体",
         "layer": "governance",
-        "description": "从失败问题和反馈生成候选语义变更，评测后提交人工审批，不静默改生产。",
+        "description": "从失败问题和反馈生成候选语义变更；用户点击发布后自动评测，不静默改生产。",
         "model_role": "semantic_extractor",
         "tools": ["mine_feedback", "propose_change", "run_golden_set"],
         "status": "core",
@@ -312,7 +312,7 @@ class AgentMeshRuntime:
                 f"生成 {len(scaffold['objects'])} 个候选对象",
             ),
             self._receipt(3, "metric_builder", "needs_review", "等待业务问题与指标口径确认"),
-            self._receipt(4, "evolution_steward", "awaiting_approval", "候选项未写入生产本体"),
+            self._receipt(4, "evolution_steward", "ready_to_publish", "候选项等待一键评测发布"),
         ]
         return {
             "status": "awaiting_approval",

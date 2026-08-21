@@ -112,12 +112,12 @@ const backups = ref<BackupItem[]>([])
 const connectorTypes = ref<ConnectorType[]>([])
 const dataSources = ref<DataSource[]>([])
 const difyIntegration = ref<DifyIntegrationStatus | null>(null)
+const integrationMessage = ref('')
 const modelProviders = ref<ModelProvider[]>([])
 const modelPresets = ref<ModelProviderPreset[]>([])
 const modelRoutes = ref<ModelRoute[]>([])
 const effectiveConfiguration = ref<EffectiveConfiguration | null>(null)
 const evaluationReport = ref<EvaluationReport | null>(null)
-const evaluationRunning = ref(false)
 const governanceMessage = ref('')
 const semanticChanges = ref<SemanticChange[]>([])
 const selectedChangeId = ref('')
@@ -365,7 +365,7 @@ const pendingChangeCount = computed(
 )
 
 const changeStatusLabels: Record<SemanticChange['status'], string> = {
-  candidate: '待评审',
+  candidate: '待发布',
   in_review: '评审中',
   approved: '已批准',
   rejected: '已驳回',
@@ -434,17 +434,26 @@ async function governChange(
   }
 }
 
-async function runEvaluation() {
-  if (evaluationRunning.value) return
-  evaluationRunning.value = true
-  governanceMessage.value = '正在执行认证语义域问题集…'
+async function publishChange(change: SemanticChange) {
+  if (governanceBusy.value) return
+  governanceBusy.value = change.change_id
+  governanceMessage.value = `正在自动评测并发布：${change.title}`
   try {
     evaluationReport.value = await runCertifiedEvaluation()
-    governanceMessage.value = evaluationReport.value.passed
-      ? `发布门禁通过：${evaluationReport.value.correct}/${evaluationReport.value.total}`
-      : `发布门禁未通过：发现 ${evaluationReport.value.failures.length} 个失败样本`
+    if (!evaluationReport.value.passed) {
+      governanceMessage.value = `发布已停止：${evaluationReport.value.failures.length} 个认证问题未通过`
+      return
+    }
+    const updated = await decideSemanticChange(change.change_id, 'publish', '自动评测通过后直接发布')
+    semanticChanges.value = semanticChanges.value.map((item) =>
+      item.change_id === updated.change_id ? updated : item,
+    )
+    governanceMessage.value = `${updated.title} · 已发布，可随时回滚`
+    await loadOverview()
+  } catch (publishError) {
+    governanceMessage.value = publishError instanceof Error ? publishError.message : '发布失败'
   } finally {
-    evaluationRunning.value = false
+    governanceBusy.value = ''
   }
 }
 
@@ -500,6 +509,53 @@ function submitOnEnter(event: KeyboardEvent) {
 
 function openDifyTools() {
   window.open(difyIntegration.value?.console_url || 'http://127.0.0.1/tools', '_blank', 'noopener')
+}
+
+async function copyIntegrationConfig(content: string, successMessage: string) {
+  try {
+    await navigator.clipboard.writeText(content)
+    integrationMessage.value = successMessage
+  } catch {
+    integrationMessage.value = '浏览器未允许复制，请使用下方下载配置。'
+  }
+}
+
+async function connectDify() {
+  openDifyTools()
+  const schemaUrl = difyIntegration.value?.schema_url || '/api/v1/integrations/dify/openapi.yaml'
+  try {
+    const response = await fetch(schemaUrl)
+    if (!response.ok) throw new Error('配置读取失败')
+    await copyIntegrationConfig(
+      await response.text(),
+      'Dify 配置已复制并打开工具页；新建自定义工具后粘贴并保存即可。',
+    )
+  } catch (connectError) {
+    integrationMessage.value = connectError instanceof Error ? connectError.message : 'Dify 接入准备失败'
+  }
+}
+
+async function copyOpenApiConfig() {
+  const schemaUrl = new URL(
+    difyIntegration.value?.schema_url || '/api/v1/integrations/dify/openapi.yaml',
+    window.location.origin,
+  ).toString()
+  await copyIntegrationConfig(schemaUrl, 'OpenAPI 地址已复制，可粘贴到任意支持 OpenAPI 的工作流或工具平台。')
+}
+
+async function copyAgentConfig() {
+  const origin = window.location.origin
+  const config = JSON.stringify(
+    {
+      mcpServers: {
+        fathom: { type: 'streamable-http', url: `${origin}/mcp` },
+      },
+      a2aAgentCard: `${origin}/.well-known/agent-card.json`,
+    },
+    null,
+    2,
+  )
+  await copyIntegrationConfig(config, 'MCP 与 A2A 配置已复制，可粘贴到 Agent 软件的连接设置。')
 }
 
 function switchWorkspace(next: Workspace) {
@@ -585,7 +641,7 @@ async function submitMetricCandidate() {
     const change = await proposeSemanticAsset(draftMetric.value)
     semanticChanges.value = [change, ...semanticChanges.value]
     metricPanelOpen.value = false
-    metricMessage.value = `候选 ${change.change_id} 已创建；通过评测与人工审批后才会发布。`
+    metricMessage.value = `候选 ${change.change_id} 已创建；点击发布时系统会自动评测。`
   } catch (proposalError) {
     metricMessage.value = proposalError instanceof Error ? proposalError.message : '候选创建失败'
   }
@@ -724,7 +780,7 @@ onMounted(async () => {
           <X v-else :size="20" />
         </button>
         <div class="breadcrumb">
-          <span>华东制造中心</span><ChevronRight :size="14" />
+          <span>AI数字化流程中心</span><ChevronRight :size="14" />
           <strong>{{ workspace === 'settings' ? '系统设置' : navItems.find((item) => item.key === workspace)?.label }}</strong>
         </div>
         <div class="topbar-actions">
@@ -845,8 +901,8 @@ onMounted(async () => {
             <div v-if="builderStep === 1" class="builder-body"><h3>数据已经在哪里？</h3><p>选择已配置的数据源。事实数据默认留在原处，只读取结构和必要样本。</p><label class="builder-source">数据源<select v-model="builderSource"><option value="">请选择</option><option v-for="source in dataSources" :key="source.key" :value="source.key">{{ source.name }} · {{ source.connector_type }} · {{ source.status }}</option></select></label><p v-if="!dataSources.length" class="builder-hint">还没有数据源，请先到“数据接入”保存并测试连接。</p></div>
             <div v-else-if="builderStep === 2" class="builder-body"><h3>从一个有限场景开始</h3><p>系统会加载制造业模板，只生成当前场景真正需要的对象和指标。</p><div class="scenario-grid"><button class="selected" @click="builderStep = 3"><Boxes :size="18" /><strong>生产执行与 OEE</strong><small>订单、产线、设备、班次、停机</small></button><button @click="builderStep = 3"><ShieldCheck :size="18" /><strong>质量追溯</strong><small>批次、检验、缺陷、工艺参数</small></button><button @click="builderStep = 3"><Wrench :size="18" /><strong>设备运维</strong><small>设备、报警、工单、备件</small></button></div></div>
             <div v-else-if="builderStep === 3" class="builder-body"><h3>业务人员经常问什么？</h3><p>每行一个问题。系统将反向识别需要的对象、关系、指标和权限。</p><textarea v-model="builderQuestions" rows="8"></textarea></div>
-            <div v-else class="builder-body builder-result"><span class="builder-success"><Check :size="24" /></span><h3>ONN 候选已生成</h3><p>系统完成真实 Schema 发现与候选映射；所有内容仍在候选区，需补充指标口径并通过评测和人工审批。</p><div class="builder-stats"><span><b>{{ builderScaffold.objects?.length ?? 0 }}</b>候选对象</span><span><b>{{ builderScaffold.attributes?.length ?? 0 }}</b>候选属性</span><span><b>{{ builderScaffold.relations?.length ?? 0 }}</b>候选关系</span></div><div class="builder-receipts"><span v-for="receipt in builderRun?.receipts ?? []" :key="receipt.sequence">{{ receipt.sequence }} · {{ receipt.summary }}</span></div></div>
-            <p v-if="builderMessage" class="builder-message">{{ builderMessage }}</p><footer><button v-if="builderStep > 1 && builderStep < 4" @click="builderStep--">上一步</button><span></span><button v-if="builderStep === 1" class="primary-action" :disabled="!builderSource" @click="builderStep = 2">下一步</button><button v-else-if="builderStep === 3" class="primary-action" :disabled="builderLoading" @click="generateDomainCandidate"><Sparkles :size="14" />{{ builderLoading ? '生成中…' : '发现并生成候选' }}</button><button v-else-if="builderStep === 4" class="primary-action" @click="enterGovernance"><Check :size="14" />进入审核</button></footer>
+            <div v-else class="builder-body builder-result"><span class="builder-success"><Check :size="24" /></span><h3>ONN 候选已生成</h3><p>系统完成真实 Schema 发现与候选映射；补充指标口径后，点击发布即可自动评测并生效。</p><div class="builder-stats"><span><b>{{ builderScaffold.objects?.length ?? 0 }}</b>候选对象</span><span><b>{{ builderScaffold.attributes?.length ?? 0 }}</b>候选属性</span><span><b>{{ builderScaffold.relations?.length ?? 0 }}</b>候选关系</span></div><div class="builder-receipts"><span v-for="receipt in builderRun?.receipts ?? []" :key="receipt.sequence">{{ receipt.sequence }} · {{ receipt.summary }}</span></div></div>
+            <p v-if="builderMessage" class="builder-message">{{ builderMessage }}</p><footer><button v-if="builderStep > 1 && builderStep < 4" @click="builderStep--">上一步</button><span></span><button v-if="builderStep === 1" class="primary-action" :disabled="!builderSource" @click="builderStep = 2">下一步</button><button v-else-if="builderStep === 3" class="primary-action" :disabled="builderLoading" @click="generateDomainCandidate"><Sparkles :size="14" />{{ builderLoading ? '生成中…' : '发现并生成候选' }}</button><button v-else-if="builderStep === 4" class="primary-action" @click="enterGovernance"><Check :size="14" />查看并发布</button></footer>
           </section>
         </div>
       </section>
@@ -868,14 +924,14 @@ onMounted(async () => {
           <label>确定性表达式<textarea v-model="draftMetric.expression" rows="3" spellcheck="false" required></textarea></label>
           <div class="form-row"><label>业务域<input v-model="draftMetric.domain" required /></label><label>Owner<input v-model="draftMetric.owner" required /></label></div>
           <div class="form-row"><label>单位<input v-model="draftMetric.unit" /></label><label>维度（逗号分隔）<input :value="draftMetric.dimensions.join(', ')" @input="updateMetricDimensions" /></label></div>
-          <button class="primary-action" type="submit"><ShieldCheck :size="15" />创建待评审候选</button>
+          <button class="primary-action" type="submit"><ShieldCheck :size="15" />创建待发布候选</button>
         </form>
       </section>
 
       <section v-else-if="workspace === 'agents'" class="workspace agents-workspace">
         <div class="workspace-heading"><div><span class="eyebrow">ONTOLOGY-CONSTRAINED AGENT MESH</span><h1>智能体网络</h1><p>按任务动态组网，所有智能体共享 FathomPlan、ONN 对象空间、权限与证据契约。</p></div><div class="mesh-heading-actions"><span class="mesh-state"><span class="pulse-dot"></span>{{ agentMesh?.agents.length ?? 0 }} 个内置智能体</span><button class="primary-action" :disabled="agentRunLoading" @click="executeActiveFlow"><Zap :size="15" />{{ agentRunLoading ? '执行中…' : '运行当前链路' }}</button></div></div>
         <div v-if="agentRunMessage" class="settings-message"><CircleDot :size="14" />{{ agentRunMessage }}</div>
-        <div class="mesh-principles"><span>最短可信链路</span><span>确定性计算</span><span>证据优先</span><span>人工审批演化</span></div>
+        <div class="mesh-principles"><span>最短可信链路</span><span>确定性计算</span><span>证据优先</span><span>自动评测发布</span></div>
         <section class="flow-card">
           <div class="flow-tabs"><button v-for="flow in agentMesh?.flows ?? []" :key="flow.key" :class="{ active: selectedAgentFlow === flow.key }" @click="selectedAgentFlow = flow.key"><strong>{{ flow.name }}</strong><small>{{ flow.trigger }} · {{ flow.sla }}</small></button></div>
           <div class="agent-flow">
@@ -902,10 +958,10 @@ onMounted(async () => {
       <section v-else-if="workspace === 'connections'" class="workspace catalog-workspace">
         <div class="workspace-heading"><div><span class="eyebrow">数据接入</span><h1>连接数据和上层应用</h1><p>先接入企业数据，再把经过授权的问数能力提供给其他应用。</p></div><button class="primary-action" @click="connectionPanelOpen = !connectionPanelOpen"><Link2 :size="16" />新建数据源</button></div>
         <div class="connection-section"><h2>上层应用</h2><div class="connection-grid">
-          <button class="connection-card connection-card--featured" @click="openDifyTools"><div class="connection-logo">D</div><div><span :class="{ online: difyIntegration?.service_running }">{{ difyIntegration?.message ?? '正在检测 Dify' }}</span><h3>Dify 工具</h3><p>点击打开 Dify 的工具页面</p></div><ChevronRight :size="18" /></button>
-          <article class="connection-card"><div class="connection-logo"><LayoutGrid :size="20" /></div><div><span>标准接口</span><h3>BI / Notebook</h3><p>通过 REST 与 SQL 消费指标</p></div></article>
-          <article class="connection-card"><div class="connection-logo"><Workflow :size="20" /></div><div><span>标准协议</span><h3>Agent / MCP</h3><p>调用问数、对象上下文和工具</p></div></article>
-        </div><div class="integration-actions"><a :href="difyIntegration?.schema_url || '/api/v1/integrations/dify/openapi.yaml'" download><Download :size="14" />下载 FATHOM 工具配置</a><button @click="openDifyTools">打开 Dify 工具页<ArrowRight :size="14" /></button></div></div>
+          <button class="connection-card connection-card--featured" @click="connectDify"><div class="connection-logo">D</div><div><span :class="{ online: difyIntegration?.service_running }">{{ difyIntegration?.service_running ? '本机服务已发现' : '等待启动' }}</span><h3>Dify</h3><p>{{ difyIntegration?.setup_completed ? '一键复制配置并打开工具页' : '启动后即可接入' }}</p></div><ChevronRight :size="18" /></button>
+          <button class="connection-card" @click="copyOpenApiConfig"><div class="connection-logo"><LayoutGrid :size="20" /></div><div><span>OpenAPI</span><h3>工作流 / 低代码平台</h3><p>一键复制标准工具地址</p></div><ChevronRight :size="18" /></button>
+          <button class="connection-card" @click="copyAgentConfig"><div class="connection-logo"><Workflow :size="20" /></div><div><span>MCP · A2A</span><h3>Agent 软件</h3><p>一键复制 Agent 连接配置</p></div><ChevronRight :size="18" /></button>
+        </div><div v-if="integrationMessage" class="settings-message integration-message"><Check :size="14" />{{ integrationMessage }}</div><div class="integration-actions"><a :href="difyIntegration?.schema_url || '/api/v1/integrations/dify/openapi.yaml'" download><Download :size="14" />下载工具配置</a><button @click="openDifyTools">打开 Dify 工具页<ArrowRight :size="14" /></button></div></div>
         <div class="connection-section">
           <div class="section-heading"><h2>企业事实源</h2><button class="quiet-action" @click="showAllConnectors = !showAllConnectors">{{ showAllConnectors ? '收起类型' : `查看全部 ${connectorTypes.length} 种` }}</button></div>
           <div class="connector-matrix">
@@ -991,16 +1047,16 @@ onMounted(async () => {
       </section>
 
       <section v-else-if="workspace === 'governance'" class="workspace governance-workspace">
-        <div class="workspace-heading"><div><span class="eyebrow">CONTROLLED EVOLUTION</span><h1>学习与治理</h1><p>让系统持续学习，但任何生产语义变更都可验证、可审批、可回滚。</p></div><button class="primary-action" :disabled="evaluationRunning" @click="runEvaluation"><ShieldCheck :size="16" />{{ evaluationRunning ? '评测中…' : '运行评测' }}</button></div>
+        <div class="workspace-heading"><div><span class="eyebrow">CONTROLLED EVOLUTION</span><h1>学习与治理</h1><p>候选生成后直接发布；系统自动完成质量评测并保留回滚点。</p></div></div>
         <div v-if="governanceMessage" class="settings-message"><Check :size="14" />{{ governanceMessage }}</div>
-        <div class="governance-summary"><article><span>待处理建议</span><strong>{{ String(pendingChangeCount).padStart(2, '0') }}</strong><small>候选、评审与待发布</small></article><article><span>语义覆盖率</span><strong>87%</strong><small>生产执行域</small></article><article><span>认证问题通过</span><strong>{{ evaluationReport ? `${evaluationReport.accuracy_percent}%` : '未运行' }}</strong><small v-if="evaluationReport">基线 {{ evaluationReport.correct }} / {{ evaluationReport.total }} · 门槛 ≥99%</small><small v-else>运行后才允许批准</small></article><article><span>失败样本</span><strong>{{ evaluationReport?.failures.length ?? '—' }}</strong><small>{{ evaluationReport?.passed ? '当前版本允许批准' : '需修复后重评' }}</small></article></div>
+        <div class="governance-summary"><article><span>待发布建议</span><strong>{{ String(pendingChangeCount).padStart(2, '0') }}</strong><small>点击即可自动评测并发布</small></article><article><span>语义覆盖率</span><strong>87%</strong><small>生产执行域</small></article><article><span>最近评测</span><strong>{{ evaluationReport ? `${evaluationReport.accuracy_percent}%` : '待运行' }}</strong><small v-if="evaluationReport">基线 {{ evaluationReport.correct }} / {{ evaluationReport.total }} · 门槛 ≥99%</small><small v-else>发布时自动运行</small></article><article><span>失败样本</span><strong>{{ evaluationReport?.failures.length ?? '—' }}</strong><small>{{ evaluationReport?.passed ? '允许直接发布' : '失败时自动拦截' }}</small></article></div>
         <p v-if="evaluationReport" class="governance-scope-note">{{ evaluationReport.scope_note }} · {{ evaluationReport.semantic_version }}</p>
         <div v-if="evaluationReport?.gates" class="evaluation-gates"><span v-for="(gate, key) in evaluationReport.gates" :key="key" :data-passed="gate.passed"><Check :size="12" />{{ evaluationGateLabels[key] ?? key }} · {{ gate.total }} 项</span></div>
         <div class="suggestion-list">
           <article v-for="change in semanticChanges" :key="change.change_id" :class="{ expanded: selectedChangeId === change.change_id }">
             <span class="suggestion-icon"><GitBranch v-if="change.kind !== 'alias'" :size="18" /><BookOpen v-else :size="18" /></span>
             <div><span class="eyebrow">{{ change.kind.toUpperCase() }} · {{ changeStatusLabels[change.status] }}</span><h3>{{ change.title }}</h3><p>{{ change.description }}</p><div class="suggestion-meta"><span>置信度 {{ change.confidence_percent }}%</span><span>影响 {{ change.impact.assets ?? 0 }} 项资产</span><span>风险 {{ change.impact.risk ?? 'unknown' }}</span><span v-if="change.evaluation_run_id">评测 {{ change.evaluation_run_id }}</span></div></div>
-            <div class="governance-actions"><button @click="selectedChangeId = selectedChangeId === change.change_id ? '' : change.change_id">{{ selectedChangeId === change.change_id ? '收起证据' : '查看证据' }}</button><button v-if="change.status === 'candidate'" class="primary-action" :disabled="governanceBusy === change.change_id" @click="governChange(change, 'start_review')">开始评审</button><template v-else-if="change.status === 'in_review'"><button @click="governChange(change, 'reject')">驳回</button><button class="primary-action" :disabled="governanceBusy === change.change_id" @click="governChange(change, 'approve')">批准</button></template><button v-else-if="change.status === 'approved'" class="primary-action" @click="governChange(change, 'publish')">发布</button><button v-else-if="change.rollback_available" @click="governChange(change, 'rollback')">回滚</button></div>
+            <div class="governance-actions"><button @click="selectedChangeId = selectedChangeId === change.change_id ? '' : change.change_id">{{ selectedChangeId === change.change_id ? '收起证据' : '查看证据' }}</button><button v-if="['candidate', 'in_review', 'approved'].includes(change.status)" class="primary-action" :disabled="governanceBusy === change.change_id" @click="publishChange(change)">{{ governanceBusy === change.change_id ? '评测中…' : '直接发布' }}</button><button v-else-if="change.rollback_available" @click="governChange(change, 'rollback')">回滚</button></div>
             <div v-if="selectedChangeId === change.change_id" class="change-evidence"><div><strong>证据</strong><code v-for="item in change.evidence" :key="item">{{ item }}</code></div><div><strong>变更补丁</strong><pre>{{ JSON.stringify(change.patch, null, 2) }}</pre></div><div><strong>决策记录</strong><span v-for="event in change.history" :key="event.at">{{ event.at.slice(0, 16).replace('T', ' ') }} · {{ event.actor }} · {{ event.action }}</span></div></div>
           </article>
         </div>

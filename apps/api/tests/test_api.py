@@ -1,3 +1,5 @@
+import json
+import ssl
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -439,6 +441,25 @@ def test_governed_evolution_requires_evaluation_and_supports_rollback(
     assert "完成率" not in rolled_back_metric["aliases"]
 
 
+def test_governed_candidate_can_publish_directly_after_evaluation(tmp_path: Path) -> None:
+    change_id = "chg_downtime_alias"
+    with make_client(tmp_path) as client:
+        blocked = client.post(
+            f"/api/v1/governance/changes/{change_id}/decision",
+            json={"action": "publish", "actor": "semantic_owner"},
+        )
+        evaluation = client.post("/api/v1/governance/evaluations")
+        published = client.post(
+            f"/api/v1/governance/changes/{change_id}/decision",
+            json={"action": "publish", "actor": "semantic_owner"},
+        )
+    assert blocked.status_code == 409
+    assert evaluation.json()["passed"] is True
+    assert published.status_code == 200, published.text
+    assert published.json()["status"] == "published"
+    assert published.json()["evaluation_run_id"] == evaluation.json()["run_id"]
+
+
 def test_ingestion_extends_object_context_and_question_scope(tmp_path: Path) -> None:
     objects = [
         {
@@ -496,12 +517,47 @@ def test_ingestion_extends_object_context_and_question_scope(tmp_path: Path) -> 
     assert context.json()["relations"][0]["related"]["object_id"] == "equipment_welder_02"
 
 
-def test_question_without_object_scope_is_blocked(tmp_path: Path) -> None:
+def test_question_without_object_scope_uses_unique_metric_object(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post("/api/v1/query/ask", json={"question": "OEE 是多少？"})
     assert response.status_code == 200
-    assert response.json()["status"] == "needs_clarification"
-    assert response.json()["plan"]["abc"][0]["status"] == "blocked"
+    assert response.json()["status"] == "completed"
+    assert response.json()["plan"]["anchors"][0]["key"] == "line_01"
+
+
+def test_question_only_asks_business_name_when_metric_scope_is_ambiguous(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        client.post(
+            "/api/v1/ingestion/objects",
+            json=[
+                {
+                    "object_id": "line_02",
+                    "object_type": "production_line",
+                    "label": "二号生产线",
+                    "source_key": "test",
+                    "attributes": {},
+                }
+            ],
+        )
+        client.post(
+            "/api/v1/ingestion/metric-observations",
+            json=[
+                {
+                    "metric_key": "oee",
+                    "object_id": "line_02",
+                    "observed_at": "2026-08-20T08:00:00Z",
+                    "value": 82.0,
+                    "dimensions": {},
+                }
+            ],
+        )
+        response = client.post("/api/v1/query/ask", json={"question": "OEE 是多少？"})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "needs_clarification"
+    assert "一号生产线" in result["answer"]
+    assert "二号生产线" in result["answer"]
+    assert "object_id" not in result["answer"]
 
 
 def test_optional_api_auth_enforces_roles_and_writes_audit(tmp_path: Path) -> None:
@@ -682,6 +738,48 @@ def test_model_gateway_validates_parameter_bounds(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.put("/api/v1/model-gateway/providers/unsafe_randomness", json=payload)
     assert response.status_code == 422
+
+
+def test_model_gateway_uses_current_ca_bundle_and_explicit_user_agent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured_requests: list[tuple[str, str | None, ssl.SSLContext]] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return json.dumps(self.payload).encode()
+
+    def fake_urlopen(request, *, timeout, context):
+        captured_requests.append((request.full_url, request.get_header("User-agent"), context))
+        if request.full_url.endswith("/models"):
+            return FakeResponse({"data": [{"id": "reasoner-v1"}]})
+        return FakeResponse({"choices": [{"message": {"content": "FATHOM_OK"}}]})
+
+    monkeypatch.setattr("fathom.application.model_gateway.urllib.request.urlopen", fake_urlopen)
+    provider = {
+        "key": "tls_reasoner",
+        "name": "TLS Reasoner",
+        "provider_type": "openai_compatible",
+        "base_url": "https://model.example.com/v1",
+        "api_mode": "chat_completions",
+        "default_model": "reasoner-v1",
+        "enabled": True,
+    }
+    with make_client(tmp_path) as client:
+        client.put("/api/v1/model-gateway/providers/tls_reasoner", json=provider)
+        result = client.post("/api/v1/model-gateway/providers/tls_reasoner/probe")
+    assert result.json()["status"] == "ready"
+    assert all(user_agent == "FATHOM/0.1" for _, user_agent, _ in captured_requests)
+    assert all(isinstance(context, ssl.SSLContext) for _, _, context in captured_requests)
 
 
 def test_multimodal_inspection_uses_governed_object_context(tmp_path: Path, monkeypatch) -> None:
