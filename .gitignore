@@ -13,3 +13,4 @@ apps/web/dist/
 apps/api/src/fathom/interfaces/static/
 tools/dify/
 artifacts/
+dist/
