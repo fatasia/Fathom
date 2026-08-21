@@ -9,16 +9,23 @@ $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $packageName = "FATHOM-$Version-$timestamp"
 $stagingParent = Join-Path $distDirectory ".staging-$timestamp"
 $stagingRoot = Join-Path $stagingParent $packageName
+$sourceArchive = Join-Path $stagingParent 'source.zip'
 $archivePath = Join-Path $distDirectory "$packageName.zip"
 
 New-Item -ItemType Directory -Force -Path $distDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
 try {
-    & git -C $projectRoot archive --format=tar HEAD | tar -xf - -C $stagingRoot
+    & git -C $projectRoot archive --format=zip --output=$sourceArchive HEAD
     if ($LASTEXITCODE -ne 0) {
         throw '无法从当前 Git 提交创建发布目录'
     }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory(
+        $sourceArchive,
+        $stagingRoot,
+        [System.Text.Encoding]::UTF8
+    )
 
     $staticSource = Join-Path $projectRoot 'apps/api/src/fathom/interfaces/static'
     if (-not (Test-Path -LiteralPath (Join-Path $staticSource 'index.html'))) {
@@ -38,12 +45,15 @@ try {
     )
     Set-Content -LiteralPath (Join-Path $stagingRoot 'PACKAGE.txt') -Value $manifest -Encoding utf8
 
-    # bsdtar emits portable UTF-8 ZIP entry names; Compress-Archive can corrupt
-    # Chinese document names when the archive is unpacked on Linux.
-    & tar -a -cf $archivePath -C $stagingParent $packageName
-    if ($LASTEXITCODE -ne 0) {
-        throw '无法创建发布 ZIP'
-    }
+    # Force UTF-8 entry names so Chinese documents unpack consistently on
+    # Windows and Linux.
+    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+        $stagingRoot,
+        $archivePath,
+        [System.IO.Compression.CompressionLevel]::Optimal,
+        $true,
+        [System.Text.Encoding]::UTF8
+    )
     $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath "$archivePath.sha256" -Value "$hash  $packageName.zip" -Encoding ascii
     Get-Item -LiteralPath $archivePath | Select-Object FullName, Length, LastWriteTime
