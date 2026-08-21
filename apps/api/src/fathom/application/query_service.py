@@ -311,7 +311,7 @@ class QueryService:
         trace_id = f"tr_{uuid4().hex[:16]}"
         semantic_version = request.semantic_version or "manufacturing.execution@0.1.0"
         conversational = self._answer_conversational(
-            request.question, trace_id, semantic_version, allow_general=False
+            request, trace_id, semantic_version, allow_general=False
         )
         if conversational is not None:
             self._save_trace(
@@ -337,7 +337,7 @@ class QueryService:
                 )
                 return knowledge_response
             conversational = self._answer_conversational(
-                request.question, trace_id, semantic_version, allow_general=True
+                request, trace_id, semantic_version, allow_general=True
             )
             if conversational is not None:
                 self._save_trace(
@@ -517,7 +517,7 @@ class QueryService:
 
     def _answer_conversational(
         self,
-        question: str,
+        request: AskRequest,
         trace_id: str,
         semantic_version: str,
         *,
@@ -525,6 +525,7 @@ class QueryService:
     ) -> AskResponse | None:
         """Answer non-factual conversation before entering enterprise-data planning."""
 
+        question = request.question
         normalized = re.sub(r"[\s，。！？!?、]+", "", question.casefold())
         assets = self._repository.list_assets()
         metrics = [asset for asset in assets if asset.kind == AssetKind.METRIC]
@@ -582,6 +583,8 @@ class QueryService:
             and not any(term in question for term in enterprise_signals)
         ):
             intent = "general_conversation"
+        elif allow_general and request.attachments:
+            intent = "attachment_analysis"
         if intent is None:
             return None
 
@@ -614,10 +617,24 @@ class QueryService:
                 "解释业务口径和知识文档，并给出可追溯证据；直接输入自然语言问题即可。"
             )
         else:
-            answer = self._invoke_general_model(question) or (
+            answer = self._invoke_general_model(request) or (
                 "我可以回答工业数据、指标定义、分析方法和平台使用问题。"
                 "涉及本企业的实时数值时，需要先接入真实数据源。"
             )
+
+        acquire_summary = "已识别对话意图与可信回答边界"
+        build_summary = "已绑定回答规则，不进入企业事实计算"
+        compute_summary = "已生成自然语言回答"
+        validations = ["未将通用回答冒充企业事实", "企业数值仍需真实数据与语义校验"]
+        if intent == "semantic_definition":
+            acquire_summary = "已识别指标定义问题"
+            build_summary = "已绑定发布中的指标口径与公式"
+            compute_summary = "已按语义契约生成解释"
+        elif intent == "attachment_analysis" or request.attachments:
+            acquire_summary = f"已读取本轮 {len(request.attachments)} 个附件并识别分析目标"
+            build_summary = "已将附件绑定到本轮上下文，未写入知识库或生产语义"
+            compute_summary = "已调用受控模型生成附件分析回答"
+            validations.append("附件仅在本轮使用，不自动沉淀为企业事实")
 
         plan = FathomPlan(
             question=question,
@@ -633,22 +650,22 @@ class QueryService:
                     code="A",
                     name="Acquire",
                     status="completed",
-                    summary="已识别为对话、帮助或语义定义问题",
+                    summary=acquire_summary,
                 ),
                 AbcStage(
                     code="B",
                     name="Build",
                     status="completed",
-                    summary="已绑定可信回答边界，不进入企业事实计算",
+                    summary=build_summary,
                 ),
                 AbcStage(
                     code="C",
                     name="Compute",
                     status="completed",
-                    summary="已生成自然语言回答",
+                    summary=compute_summary,
                 ),
             ],
-            validations=["未将通用回答冒充企业事实", "企业数值仍需真实数据与语义校验"],
+            validations=validations,
         )
         return AskResponse(
             status="completed",
@@ -664,18 +681,34 @@ class QueryService:
             data_freshness=datetime.now(UTC).isoformat(),
         )
 
-    def _invoke_general_model(self, question: str) -> str | None:
+    def _invoke_general_model(self, request: AskRequest) -> str | None:
         if self._model_gateway is None:
             return None
+        attachment_text = "\n\n".join(
+            f"附件《{item.name}》：\n{item.text}"
+            for item in request.attachments
+            if item.text
+        )
+        images = [item.data_url for item in request.attachments if item.data_url]
         prompt = (
             "你是渊渟 FATHOM 的工业数据助手。请直接、自然、简洁地回答用户问题。"
             "可以回答通用知识、方法和使用帮助；不得编造任何企业专属数值、状态或事实。"
             "如果问题需要企业实时数据，应明确说明需要先接入并验证数据。\n\n"
-            f"用户问题：{question}"
+            f"用户问题：{request.question}"
+            + (f"\n\n以下是用户本轮提供的附件内容：\n{attachment_text}" if attachment_text else "")
         )
         try:
-            result = self._model_gateway.invoke_role("explainer", prompt)
-        except (OSError, ValueError):
+            role = "vision" if images else "explainer"
+            result = self._model_gateway.invoke_role(role, prompt, images or None)
+        except ValueError:
+            if not images:
+                return None
+            try:
+                # A small installation may bind only one multimodal-capable provider.
+                result = self._model_gateway.invoke_role("explainer", prompt, images)
+            except (OSError, ValueError):
+                return None
+        except OSError:
             return None
         text = result.get("text")
         return str(text).strip() if text else None

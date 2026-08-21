@@ -48,6 +48,13 @@ export interface DifyIntegrationStatus {
   message: string
 }
 
+export interface QueryAttachment {
+  name: string
+  content_type: string
+  text: string
+  data_url: string
+}
+
 export interface AskResult {
   status: string
   answer: string

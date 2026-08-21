@@ -38,9 +38,11 @@ import {
   X,
   Zap,
 } from '@lucide/vue'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import { computed, nextTick, onMounted, ref } from 'vue'
 import {
-  askData,
+  askDataStream,
   createBackup,
   deleteSqlTemplate,
   fetchBackups,
@@ -63,7 +65,6 @@ import {
   previewImport,
   previewSqlTemplate,
   importSemantics,
-  inspectImage,
   previewPipeline,
   proposeSemanticAsset,
   saveDataSource,
@@ -80,6 +81,7 @@ import {
   testDataSource,
   testKnowledgeBase,
   uploadKnowledgeDocument,
+  uploadQueryAttachment,
   deleteKnowledgeDocument,
   searchKnowledge,
   restoreBackup,
@@ -108,6 +110,7 @@ import type {
   PipelinePreview,
   PythonExtension,
   PythonExtensionRun,
+  QueryAttachment,
   SemanticOverview,
   SemanticChange,
   SqlTemplate,
@@ -120,10 +123,14 @@ type Workspace = 'ask' | 'ontology' | 'knowledge' | 'metrics' | 'agents' | 'conn
 type ConversationTurn = {
   id: string
   question: string
+  attachments: QueryAttachment[]
   result: AskResult | null
   error: string
   evidenceOpen: boolean
   executionOpen: boolean
+  streamedAnswer: string
+  stage: string
+  stageMessage: string
 }
 
 const workspace = ref<Workspace>('ask')
@@ -184,14 +191,9 @@ const modelPanelOpen = ref(false)
 const modelMessage = ref('')
 const conversationHistory = ref<ConversationTurn[]>([])
 const conversationEnd = ref<HTMLElement | null>(null)
+const pendingAttachments = ref<QueryAttachment[]>([])
+const attachmentBusy = ref(false)
 const objectInstances = ref<ObjectInstance[]>([])
-const visionAnalysis = ref<{
-  analysis: string
-  object_id: string
-  model: string
-  note: string
-} | null>(null)
-const visionLoading = ref(false)
 const selectedTemplate = ref<SqlTemplate | null>(null)
 const sqlTemplateVersions = ref<SqlTemplateVersion[]>([])
 const sqlParametersText = ref('{}')
@@ -303,6 +305,20 @@ function metricLabelOf(answer: AskResult) {
 
 function objectLabelOf(answer: AskResult) {
   return answer.plan.anchors.find((anchor) => anchor.kind === 'object')?.label ?? '业务对象'
+}
+
+function renderMarkdown(content: string) {
+  return DOMPurify.sanitize(marked.parse(content, { breaks: true, gfm: true }) as string)
+}
+
+const executionStageOrder = ['acquire', 'build', 'compute']
+
+function executionStageState(current: string, target: string) {
+  const currentIndex = executionStageOrder.indexOf(current)
+  const targetIndex = executionStageOrder.indexOf(target)
+  if (targetIndex < currentIndex) return 'completed'
+  if (targetIndex === currentIndex) return 'active'
+  return 'pending'
 }
 
 const modelStatusLabels: Record<string, string> = {
@@ -659,22 +675,36 @@ async function publishChange(change: SemanticChange) {
 async function submitQuestion(nextQuestion?: string) {
   const content = nextQuestion ?? question.value
   if (!content.trim() || isLoading.value) return
+  const attachments = [...pendingAttachments.value]
   const turn: ConversationTurn = {
     id: `${Date.now()}-${conversationHistory.value.length}`,
     question: content.trim(),
+    attachments,
     result: null,
     error: '',
     evidenceOpen: false,
     executionOpen: false,
+    streamedAnswer: '',
+    stage: 'acquire',
+    stageMessage: '正在理解问题与业务范围',
   }
   conversationHistory.value.push(turn)
   question.value = ''
+  pendingAttachments.value = []
   isLoading.value = true
   error.value = ''
   await nextTick()
   conversationEnd.value?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   try {
-    result.value = await askData(content)
+    result.value = await askDataStream(content, attachments, {
+      onProgress(stage, message) {
+        turn.stage = stage
+        turn.stageMessage = message
+      },
+      onDelta(text) {
+        turn.streamedAnswer += text
+      },
+    })
     turn.result = result.value
   } catch (requestError) {
     turn.error = requestError instanceof Error ? requestError.message : '分析失败，请稍后重试。'
@@ -685,40 +715,35 @@ async function submitQuestion(nextQuestion?: string) {
   }
 }
 
-async function handleVisionUpload(event: Event) {
+function submitOnEnter(event: KeyboardEvent) {
+  if (event.shiftKey || event.isComposing) return
+  event.preventDefault()
+  void submitQuestion()
+}
+
+async function handleChatAttachments(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  visionLoading.value = true
-  visionAnalysis.value = null
+  const files = Array.from(input.files ?? [])
+  if (!files.length) return
+  if (pendingAttachments.value.length + files.length > 5) {
+    error.value = '每轮最多上传 5 个附件。'
+    input.value = ''
+    return
+  }
+  attachmentBusy.value = true
   error.value = ''
   try {
-    const plannedObjectId = result.value?.plan.anchors.find(
-      (anchor) => anchor.kind === 'object',
-    )?.key
-    const objectId = plannedObjectId || (objectInstances.value.length === 1
-      ? objectInstances.value[0].object_id
-      : '')
-    if (!objectId) {
-      throw new Error('请先问一句包含设备或产线的问题，系统识别对象后即可附图分析。')
-    }
-    visionAnalysis.value = await inspectImage(
-      file,
-      objectId,
-      `${question.value}\n请将可见信息与业务对象关联，并区分事实、推断和不确定项。`,
-    )
-  } catch (visionError) {
-    error.value = visionError instanceof Error ? visionError.message : '图像理解失败'
+    for (const file of files) pendingAttachments.value.push(await uploadQueryAttachment(file))
+  } catch (attachmentError) {
+    error.value = attachmentError instanceof Error ? attachmentError.message : '附件读取失败'
   } finally {
-    visionLoading.value = false
+    attachmentBusy.value = false
     input.value = ''
   }
 }
 
-function submitOnEnter(event: KeyboardEvent) {
-  if (event.shiftKey) return
-  event.preventDefault()
-  void submitQuestion()
+function removeChatAttachment(index: number) {
+  pendingAttachments.value.splice(index, 1)
 }
 
 function openDifyTools() {
@@ -786,6 +811,8 @@ function resetConversation() {
   conversationHistory.value = []
   result.value = null
   question.value = ''
+  pendingAttachments.value = []
+  error.value = ''
   evidenceOpen.value = false
   executionOpen.value = false
 }
@@ -1154,10 +1181,29 @@ onMounted(async () => {
 
           <div class="conversation-stream" aria-live="polite">
             <section v-for="turn in conversationHistory" :key="turn.id" class="conversation-turn">
-              <div class="user-message"><div class="message-avatar">R</div><p>{{ turn.question }}</p></div>
+              <div class="user-message">
+                <div class="message-avatar">R</div>
+                <div class="user-content">
+                  <p>{{ turn.question }}</p>
+                  <div v-if="turn.attachments.length" class="message-attachments">
+                    <span v-for="attachment in turn.attachments" :key="attachment.name"><FileCode2 :size="13" />{{ attachment.name }}</span>
+                  </div>
+                </div>
+              </div>
               <div class="assistant-message">
                 <div class="assistant-avatar"><Waves :size="17" /></div>
-                <div v-if="!turn.result && !turn.error" class="assistant-body assistant-thinking"><div class="dive-loader"><span></span><span></span><span></span></div><div><strong>正在理解并校验</strong><p>识别意图、业务语义和可用证据</p></div></div>
+                <div v-if="!turn.result && !turn.error" class="assistant-body live-response">
+                  <div class="live-process">
+                    <div class="process-steps" aria-label="思考与执行进度">
+                      <span :data-state="executionStageState(turn.stage, 'acquire')"><b>A</b>理解</span>
+                      <span :data-state="executionStageState(turn.stage, 'build')"><b>B</b>构建</span>
+                      <span :data-state="executionStageState(turn.stage, 'compute')"><b>C</b>计算</span>
+                    </div>
+                    <p><span class="process-pulse"></span>{{ turn.stageMessage }}</p>
+                  </div>
+                  <div v-if="turn.streamedAnswer" class="markdown-answer markdown-answer--streaming" v-html="renderMarkdown(turn.streamedAnswer)"></div>
+                  <div v-else class="assistant-thinking"><div class="dive-loader"><span></span><span></span><span></span></div><div><strong>正在处理</strong><p>分析意图、语义口径和可用证据</p></div></div>
+                </div>
                 <div v-else-if="turn.error" class="assistant-body error-card">{{ turn.error }}</div>
                 <article v-else-if="turn.result" class="assistant-body result-card">
                   <div class="result-meta">
@@ -1166,7 +1212,7 @@ onMounted(async () => {
                     <span v-else class="clarify-badge"><CircleDot :size="13" />需要自然语言确认</span>
                     <span>{{ turn.result.semantic_version }}</span>
                   </div>
-                  <h2>{{ turn.result.answer }}</h2>
+                  <div class="markdown-answer" v-html="renderMarkdown(turn.result.answer)"></div>
 
                   <div v-if="turn.result.data.current !== undefined" class="metric-stage">
                     <div class="metric-primary"><span>{{ metricLabelOf(turn.result) }}</span><strong>{{ turn.result.data.current }}<small>{{ turn.result.data.unit }}</small></strong><em :class="{ positive: (turn.result.data.delta ?? 0) >= 0 }">{{ (turn.result.data.delta ?? 0) >= 0 ? '+' : '' }}{{ turn.result.data.delta }}{{ turn.result.data.unit }} 较前日</em></div>
@@ -1180,11 +1226,15 @@ onMounted(async () => {
 
                   <div class="result-actions">
                     <button v-if="turn.result.evidence.length" @click="turn.evidenceOpen = !turn.evidenceOpen"><BookOpen :size="14" />{{ turn.evidenceOpen ? '收起证据' : `证据（${turn.result.evidence.length}）` }}</button>
-                    <button @click="turn.executionOpen = !turn.executionOpen"><GitBranch :size="14" />{{ turn.executionOpen ? '收起过程' : '计算过程' }}</button>
+                    <button @click="turn.executionOpen = !turn.executionOpen"><GitBranch :size="14" />{{ turn.executionOpen ? '收起过程' : '思考与执行' }}</button>
                     <code>{{ turn.result.trace_id }}</code>
                   </div>
 
-                  <div v-if="turn.executionOpen" class="plan-strip"><div v-for="stage in turn.result.plan.abc" :key="stage.code"><b>{{ stage.code }}</b><span>{{ stage.name }} · {{ stage.summary }}</span></div></div>
+                  <div v-if="turn.executionOpen" class="execution-detail">
+                    <div class="process-notice"><ShieldCheck :size="14" />展示可审计的业务决策路径，不展示不可验证的模型隐藏推理。</div>
+                    <div class="plan-strip"><div v-for="stage in turn.result.plan.abc" :key="stage.code"><b>{{ stage.code }}</b><span>{{ stage.name }} · {{ stage.summary }}</span></div></div>
+                    <div v-if="turn.result.plan.validations.length" class="validation-list"><span v-for="validation in turn.result.plan.validations" :key="validation"><Check :size="12" />{{ validation }}</span></div>
+                  </div>
 
                   <aside v-if="turn.evidenceOpen" class="evidence-panel evidence-panel--inline">
                     <div class="panel-title"><div><BookOpen :size="17" /><strong>答案证据</strong></div><span>{{ turn.result.evidence.length }} 项</span></div>
@@ -1197,20 +1247,24 @@ onMounted(async () => {
                 </article>
               </div>
             </section>
-            <article v-if="visionAnalysis" class="vision-result"><div><UploadCloud :size="17" /><strong>图片识别结果</strong><span>{{ visionAnalysis.object_id }}</span></div><p>{{ visionAnalysis.analysis }}</p><small>{{ visionAnalysis.note }}</small></article>
             <div ref="conversationEnd" class="conversation-end"></div>
           </div>
 
           <form class="question-box chat-composer" @submit.prevent="submitQuestion()">
+            <div v-if="pendingAttachments.length" class="pending-attachments">
+              <span v-for="(attachment, index) in pendingAttachments" :key="`${attachment.name}-${index}`"><FileCode2 :size="13" /><b>{{ attachment.name }}</b><button type="button" :aria-label="`移除 ${attachment.name}`" @click="removeChatAttachment(index)"><X :size="12" /></button></span>
+            </div>
             <textarea v-model="question" aria-label="输入要查询的业务问题" placeholder="给 FATHOM 发消息…" rows="1" @keydown.enter="submitOnEnter"></textarea>
             <div class="question-footer">
               <div class="question-options">
                 <span class="auto-understanding"><Sparkles :size="13" />自动理解范围</span>
-                <label class="vision-upload" title="上传现场图片辅助分析"><input type="file" accept="image/jpeg,image/png,image/webp" @change="handleVisionUpload" /><UploadCloud :size="14" />{{ visionLoading ? '识别中…' : '附图' }}</label>
+                <label class="vision-upload" title="上传图片、PDF、Word、表格或文本"><input type="file" multiple accept="image/jpeg,image/png,image/webp,.pdf,.docx,.txt,.md,.csv,.json,.jsonl,.yaml,.yml" @change="handleChatAttachments" /><UploadCloud :size="14" />{{ attachmentBusy ? '读取中…' : '附件' }}</label>
+                <span class="keyboard-hint">Enter 发送 · Shift+Enter 换行</span>
               </div>
-              <button class="send-button" type="submit" :disabled="isLoading || !question.trim()" aria-label="发送"><Send :size="16" /></button>
+              <button class="send-button" type="submit" :disabled="isLoading || attachmentBusy || !question.trim()" aria-label="发送"><Send :size="16" /></button>
             </div>
           </form>
+          <p v-if="error" class="composer-error">{{ error }}</p>
           <p class="chat-disclaimer">企业数值只采用真实数据和已发布口径；通用回答可能由模型生成，请结合业务语境判断。</p>
         </div>
       </section>

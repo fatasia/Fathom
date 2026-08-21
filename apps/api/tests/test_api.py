@@ -86,6 +86,57 @@ def test_metric_definition_does_not_require_object_selection(tmp_path: Path) -> 
     assert result["evidence"][0]["type"] == "semantic_contract"
 
 
+def test_query_stream_exposes_progress_deltas_and_complete_result(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post("/api/v1/query/stream", json={"question": "你好"})
+    body = response.text
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert 'event: progress\ndata: {"stage": "acquire"' in body
+    assert 'event: progress\ndata: {"stage": "build"' in body
+    assert 'event: progress\ndata: {"stage": "compute"' in body
+    assert "event: delta" in body
+    assert "event: complete" in body
+    assert '"intent": "greeting"' in body
+
+
+def test_query_attachment_extracts_utf8_text(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/api/v1/query/attachments",
+            files={"file": ("shift-note.md", "# 交接记录\n液压站压力正常。", "text/markdown")},
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "shift-note.md",
+        "content_type": "text/markdown",
+        "text": "# 交接记录\n液压站压力正常。",
+        "data_url": "",
+    }
+
+
+def test_query_attachment_rejects_unsupported_type(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/api/v1/query/attachments",
+            files={"file": ("payload.exe", b"not-an-executable", "application/octet-stream")},
+        )
+    assert response.status_code == 415
+
+
+def test_query_attachment_prepares_image_for_multimodal_route(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/api/v1/query/attachments",
+            files={"file": ("line.webp", b"RIFF", "image/webp")},
+        )
+    result = response.json()
+    assert response.status_code == 200
+    assert result["name"] == "line.webp"
+    assert result["text"] == ""
+    assert result["data_url"].startswith("data:image/webp;base64,")
+
+
 def test_abc_uses_uino_acquire_build_compute(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post(

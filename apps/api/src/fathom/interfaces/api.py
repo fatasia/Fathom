@@ -8,10 +8,11 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Annotated
+from xml.etree import ElementTree
 
 import yaml
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fathom.application.agent_mesh import AgentRunInput, agent_mesh_overview
 from fathom.application.capabilities import detect_capabilities
 from fathom.application.data_sources import DataSourceInput, connector_catalog
@@ -48,7 +49,7 @@ from fathom.application.python_extensions import (
     PythonRunInput,
 )
 from fathom.domains.pipelines.models import PipelineDefinition
-from fathom.domains.query.models import AskRequest, AskResponse
+from fathom.domains.query.models import AskRequest, AskResponse, QueryAttachment
 from fathom.domains.semantics.models import DomainContract
 
 router = APIRouter(prefix="/api/v1")
@@ -425,6 +426,96 @@ def ask_data_text(payload: AskRequest, request: Request) -> PlainTextResponse:
             "X-Fathom-Trace-Id": result.trace_id,
         },
     )
+
+
+@router.post("/query/stream")
+def ask_data_stream(payload: AskRequest, request: Request) -> StreamingResponse:
+    """Stream progress, answer deltas and the final evidence-bearing result over SSE."""
+
+    def event_stream():
+        progress = [
+            ("acquire", "正在理解问题与业务范围"),
+            ("build", "正在绑定语义、指标与权限"),
+        ]
+        for stage, message in progress:
+            data = json.dumps({"stage": stage, "message": message}, ensure_ascii=False)
+            yield f"event: progress\ndata: {data}\n\n"
+        try:
+            result = request.app.state.query_service.ask(
+                payload, getattr(request.state, "authorized_objects", None)
+            )
+        except PermissionError as error:
+            data = json.dumps({"message": str(error)}, ensure_ascii=False)
+            yield f"event: error\ndata: {data}\n\n"
+            return
+        data = json.dumps(
+            {"stage": "compute", "message": "可信结果已生成，正在组织回答"},
+            ensure_ascii=False,
+        )
+        yield f"event: progress\ndata: {data}\n\n"
+        for index in range(0, len(result.answer), 18):
+            delta = json.dumps({"text": result.answer[index : index + 18]}, ensure_ascii=False)
+            yield f"event: delta\ndata: {delta}\n\n"
+        complete = json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
+        yield f"event: complete\ndata: {complete}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/query/attachments")
+async def prepare_query_attachment(file: Annotated[UploadFile, File(...)]) -> QueryAttachment:
+    """Validate and extract a lightweight chat attachment before it enters a prompt."""
+
+    filename = Path(file.filename or "attachment").name
+    suffix = Path(filename).suffix.casefold()
+    content = await file.read(8 * 1024 * 1024 + 1)
+    if len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="单个附件不能超过 8 MB")
+    content_type = file.content_type or "application/octet-stream"
+    if content_type in {"image/jpeg", "image/png", "image/webp"}:
+        encoded = base64.b64encode(content).decode("ascii")
+        return QueryAttachment(
+            name=filename,
+            content_type=content_type,
+            data_url=f"data:{content_type};base64,{encoded}",
+        )
+
+    text_suffixes = {".txt", ".md", ".csv", ".json", ".jsonl", ".yaml", ".yml"}
+    try:
+        if suffix in text_suffixes:
+            extracted = content.decode("utf-8-sig")
+        elif suffix == ".pdf":
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(content))
+            if len(reader.pages) > 100:
+                raise HTTPException(status_code=422, detail="PDF 最多支持 100 页")
+            extracted = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+        elif suffix == ".docx":
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                document = archive.read("word/document.xml")
+            root = ElementTree.fromstring(document)  # noqa: S314
+            extracted = "\n".join(text for text in root.itertext() if text.strip())
+        else:
+            raise HTTPException(
+                status_code=415,
+                detail="支持图片、TXT、Markdown、CSV、JSON、YAML、PDF 和 DOCX",
+            )
+    except (UnicodeDecodeError, zipfile.BadZipFile, KeyError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=f"附件内容无法读取：{filename}") from error
+    extracted = extracted.strip()
+    if not extracted:
+        raise HTTPException(status_code=422, detail="附件中没有可读取的文本")
+    if len(extracted) > 200_000:
+        extracted = extracted[:200_000] + "\n[内容已截断]"
+    return QueryAttachment(name=filename, content_type=content_type, text=extracted)
 
 
 @router.get("/tools/sql-templates")

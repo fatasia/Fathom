@@ -44,10 +44,19 @@ class FathomPlan(BaseModel):
     clarification: str | None = None
 
 
+class QueryAttachment(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(min_length=1, max_length=120)
+    text: str = Field(default="", max_length=200_000)
+    # Base64 expands an 8 MiB binary by roughly one third.
+    data_url: str = Field(default="", max_length=12_000_000)
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
     scope: dict[str, str] = Field(default_factory=dict)
     semantic_version: str | None = None
+    attachments: list[QueryAttachment] = Field(default_factory=list, max_length=5)
 
 
 class Evidence(BaseModel):

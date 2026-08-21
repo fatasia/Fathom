@@ -18,6 +18,7 @@ import type {
   PipelinePreview,
   PythonExtension,
   PythonExtensionRun,
+  QueryAttachment,
   SemanticOverview,
   SemanticChange,
   SqlPreview,
@@ -63,6 +64,61 @@ export function askData(question: string): Promise<AskResult> {
     method: 'POST',
     body: JSON.stringify({ question }),
   })
+}
+
+export async function uploadQueryAttachment(file: File): Promise<QueryAttachment> {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await fetch('/api/v1/query/attachments', { method: 'POST', body: form })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { detail?: string }
+    throw new Error(payload.detail || `附件读取失败：${response.status}`)
+  }
+  return response.json() as Promise<QueryAttachment>
+}
+
+export async function askDataStream(
+  question: string,
+  attachments: QueryAttachment[],
+  callbacks: {
+    onProgress: (stage: string, message: string) => void
+    onDelta: (text: string) => void
+  },
+): Promise<AskResult> {
+  const response = await fetch('/api/v1/query/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, attachments }),
+  })
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({})) as { detail?: string }
+    throw new Error(payload.detail || `请求失败：${response.status}`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completed: AskResult | null = null
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      const lines = block.split(/\r?\n/)
+      const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim()
+      const data = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
+      if (!event || !data) continue
+      const payload = JSON.parse(data) as Record<string, unknown>
+      if (event === 'progress') callbacks.onProgress(String(payload.stage), String(payload.message))
+      if (event === 'delta') callbacks.onDelta(String(payload.text ?? ''))
+      if (event === 'error') throw new Error(String(payload.message || '问数失败'))
+      if (event === 'complete') completed = payload as unknown as AskResult
+    }
+    if (done) break
+  }
+  if (!completed) throw new Error('流式回答意外中断，请重试。')
+  return completed
 }
 
 export function fetchDifyIntegrationStatus(): Promise<DifyIntegrationStatus> {
