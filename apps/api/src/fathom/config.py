@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     enable_vector_search: bool = False
     duckdb_memory_limit: str = "512MB"
     duckdb_threads: int = Field(default=2, ge=1, le=32)
+    dify_console_url: str = "http://127.0.0.1"
     model_gateway: dict[str, Any] = Field(default_factory=dict)
     auth_enabled: bool = False
     auth_principals: dict[str, dict[str, Any]] = Field(default_factory=dict)

@@ -5,10 +5,10 @@ FATHOM 管理数据源、ONN 语义、指标口径、权限和执行；Dify 管�
 ## 方式一：Custom Tool / OpenAPI
 
 1. 启动 FATHOM Web 服务。
-2. 在 Dify 的工具配置中导入 `fathom-openapi.yaml`。
+2. 在 Dify 的“工具 → 自定义工具”中导入 `fathom-openapi.yaml`。
 3. 将 Server URL 改为 Dify 服务能够访问的 FATHOM 地址。
 4. 为工具凭证配置服务端 API Token；不要把 Token 写进 Workflow 参数。
-5. 在 Workflow 或 Agent 中使用 `search_semantics` 和 `ask_data`。
+5. 在 Workflow 或 Agent 中使用语义搜索、可信问数、对象上下文或受控智能体链路。
 6. 将 FATHOM 返回的 `trace_id` 保存到 Dify 运行日志，支持跨系统追踪。
 
 ## 方式二：HTTP Request

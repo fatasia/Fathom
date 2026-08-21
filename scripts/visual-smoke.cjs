@@ -15,21 +15,46 @@ async function main() {
 
   await page.goto('http://127.0.0.1:8000', { waitUntil: 'networkidle' })
   await page.screenshot({ path: path.join(outputDirectory, '01-ask.png'), fullPage: true })
+  await page.getByRole('button', { name: '一号线昨天 OEE 怎么样？', exact: true }).click()
+  await page.getByText('结果已校验', { exact: true }).waitFor()
+  await page.getByRole('button', { name: /查看证据/ }).click()
+  await page.getByRole('button', { name: '查看计算过程', exact: true }).click()
+  await page.screenshot({ path: path.join(outputDirectory, '01b-ask-result.png'), fullPage: true })
 
-  const screens = [
+  const primaryScreens = [
     ['业务知识', '02-ontology.png'],
+    ['数据接入', '05-connections.png'],
+  ]
+  for (const [label, filename] of primaryScreens) {
+    await page.getByRole('button', { name: label, exact: true }).click()
+    await page.waitForTimeout(250)
+    if (label === '数据接入') {
+      const visibleConnectorCount = await page.locator('.connector-matrix article').count()
+      if (visibleConnectorCount !== 6) throw new Error(`Expected 6 default connectors, got ${visibleConnectorCount}`)
+      await page.getByRole('button', { name: /查看全部 \d+ 种/ }).click()
+      const expandedConnectorCount = await page.locator('.connector-matrix article').count()
+      if (expandedConnectorCount <= visibleConnectorCount) {
+        throw new Error(`Connector expansion failed: ${expandedConnectorCount}`)
+      }
+      await page.getByRole('button', { name: '收起类型', exact: true }).click()
+    }
+    await page.screenshot({ path: path.join(outputDirectory, filename), fullPage: true })
+  }
+
+  await page.getByRole('button', { name: '高级管理', exact: true }).click()
+  const advancedScreens = [
     ['指标中心', '03-metrics.png'],
     ['智能体网络', '04-agents.png'],
-    ['数据连接', '05-connections.png'],
     ['工程工具', '06-studio.png'],
     ['学习与治理', '07-governance.png'],
-    ['系统设置', '08-settings.png'],
   ]
-  for (const [label, filename] of screens) {
+  for (const [label, filename] of advancedScreens) {
     await page.getByRole('button', { name: label, exact: true }).click()
     await page.waitForTimeout(250)
     await page.screenshot({ path: path.join(outputDirectory, filename), fullPage: true })
   }
+  await page.getByRole('button', { name: '系统设置', exact: true }).click()
+  await page.screenshot({ path: path.join(outputDirectory, '08-settings.png'), fullPage: true })
 
   await page.getByRole('button', { name: '业务知识', exact: true }).click()
   await page.getByRole('button', { name: '新建业务域', exact: true }).click()
@@ -48,6 +73,7 @@ async function main() {
   await mobile.goto('http://127.0.0.1:8000', { waitUntil: 'networkidle' })
   await mobile.screenshot({ path: path.join(outputDirectory, '10-mobile-ask.png'), fullPage: true })
   await mobile.getByRole('button', { name: '打开导航' }).click()
+  await mobile.getByRole('button', { name: '高级管理', exact: true }).click()
   await mobile.getByRole('button', { name: '工程工具', exact: true }).click()
   await mobile.waitForTimeout(400)
   await mobile.screenshot({ path: path.join(outputDirectory, '11-mobile-studio.png'), fullPage: true })
@@ -68,7 +94,7 @@ async function main() {
   if (mobileLayout.documentWidth > mobileLayout.viewport + 1) {
     throw new Error(`Mobile horizontal overflow: ${JSON.stringify(mobileLayout)}`)
   }
-  process.stdout.write(JSON.stringify({ ok: true, layout, mobileLayout, screenshots: 12 }, null, 2))
+  process.stdout.write(JSON.stringify({ ok: true, layout, mobileLayout, screenshots: 13 }, null, 2))
 }
 
 main().catch((error) => {

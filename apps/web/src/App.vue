@@ -21,8 +21,6 @@ import {
   Link2,
   Menu,
   Network,
-  PanelRightClose,
-  PanelRightOpen,
   Search,
   Send,
   Save,
@@ -45,6 +43,7 @@ import {
   fetchAgentMesh,
   fetchConnectorTypes,
   fetchDataSources,
+  fetchDifyIntegrationStatus,
   fetchLatestEvaluation,
   fetchModelGateway,
   fetchObjectInstances,
@@ -76,6 +75,7 @@ import type {
   BackupItem,
   ConnectorType,
   DataSource,
+  DifyIntegrationStatus,
   EffectiveConfiguration,
   EvaluationReport,
   ModelProvider,
@@ -91,7 +91,7 @@ import type {
 type Workspace = 'ask' | 'ontology' | 'metrics' | 'agents' | 'connections' | 'studio' | 'governance' | 'settings'
 
 const workspace = ref<Workspace>('ask')
-const question = ref('为什么一号线昨天订单达成率下降？')
+const question = ref('')
 const isLoading = ref(false)
 const error = ref('')
 const result = ref<AskResult | null>(null)
@@ -101,7 +101,9 @@ const selectedAgentFlow = ref('trusted_qa')
 const latestAgentRun = ref<AgentRun | null>(null)
 const agentRunMessage = ref('')
 const agentRunLoading = ref(false)
-const evidenceOpen = ref(true)
+const evidenceOpen = ref(false)
+const executionOpen = ref(false)
+const showAdvancedNav = ref(false)
 const selectedKind = ref<AssetKind | 'all'>('all')
 const semanticQuery = ref('')
 const mobileNavOpen = ref(false)
@@ -109,6 +111,7 @@ const sqlTemplates = ref<SqlTemplate[]>([])
 const backups = ref<BackupItem[]>([])
 const connectorTypes = ref<ConnectorType[]>([])
 const dataSources = ref<DataSource[]>([])
+const difyIntegration = ref<DifyIntegrationStatus | null>(null)
 const modelProviders = ref<ModelProvider[]>([])
 const modelPresets = ref<ModelProviderPreset[]>([])
 const modelRoutes = ref<ModelRoute[]>([])
@@ -137,7 +140,7 @@ const modelPanelOpen = ref(false)
 const modelMessage = ref('')
 const conversationHistory = ref<Array<{ question: string; answer: string; traceId: string }>>([])
 const objectInstances = ref<ObjectInstance[]>([])
-const selectedObjectId = ref('line_01')
+const selectedObjectId = ref('')
 const visionAnalysis = ref<{
   analysis: string
   object_id: string
@@ -158,6 +161,7 @@ const pipelineStepsText = ref(`[
   { "operation": "onn_map", "configuration": { "object": "business_object", "identity": "id" } }
 ]`)
 const connectionPanelOpen = ref(false)
+const showAllConnectors = ref(false)
 const builderOpen = ref(false)
 const builderStep = ref(1)
 const builderQuestions = ref('为什么一号线订单达成率下降？\n哪些设备停机影响最大？\n昨日 OEE 是否异常？')
@@ -199,15 +203,20 @@ const kindMeta: Record<AssetKind, { label: string; short: string }> = {
   policy: { label: '权限', short: 'P' },
 }
 
-const navItems: Array<{ key: Workspace; label: string; icon: typeof Sparkles }> = [
-  { key: 'ask', label: '问与探', icon: Sparkles },
+const primaryNavItems: Array<{ key: Workspace; label: string; icon: typeof Sparkles }> = [
+  { key: 'ask', label: '问数', icon: Sparkles },
   { key: 'ontology', label: '业务知识', icon: Network },
+  { key: 'connections', label: '数据接入', icon: Cable },
+]
+
+const advancedNavItems: Array<{ key: Workspace; label: string; icon: typeof Sparkles }> = [
   { key: 'metrics', label: '指标中心', icon: Activity },
   { key: 'agents', label: '智能体网络', icon: Workflow },
-  { key: 'connections', label: '数据连接', icon: Cable },
   { key: 'studio', label: '工程工具', icon: Wrench },
   { key: 'governance', label: '学习与治理', icon: ShieldCheck },
 ]
+
+const navItems = [...primaryNavItems, ...advancedNavItems]
 
 const filteredAssets = computed(() => {
   const assets = overview.value?.assets ?? []
@@ -221,6 +230,9 @@ const filteredAssets = computed(() => {
 
 const currentMetricLabel = computed(
   () => result.value?.plan.anchors.find((anchor) => anchor.kind === 'metric')?.label ?? '订单达成率',
+)
+const currentObjectLabel = computed(
+  () => result.value?.plan.anchors.find((anchor) => anchor.kind === 'object')?.label ?? '业务对象',
 )
 
 const modelStatusLabels: Record<string, string> = {
@@ -256,7 +268,7 @@ async function executeActiveFlow() {
     if (selectedAgentFlow.value === 'guided_onboarding') {
       const source = dataSources.value[0]
       if (!source) {
-        agentRunMessage.value = '请先在“数据连接”中保存一个可发现 Schema 的数据源。'
+        agentRunMessage.value = '请先在“数据接入”中保存一个可发现 Schema 的数据源。'
         return
       }
       payload.source_key = source.key
@@ -311,20 +323,22 @@ async function loadAgentMesh() {
 }
 
 async function loadPlatformData() {
-  const [templates, backupItems, types, sources, objects] = await Promise.all([
+  const [templates, backupItems, types, sources, objects, dify] = await Promise.all([
     fetchSqlTemplates(),
     fetchBackups(),
     fetchConnectorTypes(),
     fetchDataSources(),
     fetchObjectInstances(),
+    fetchDifyIntegrationStatus(),
   ])
   sqlTemplates.value = templates
   backups.value = backupItems
   connectorTypes.value = types
   dataSources.value = sources
   objectInstances.value = objects
-  if (!objects.some((item) => item.object_id === selectedObjectId.value) && objects[0]) {
-    selectedObjectId.value = objects[0].object_id
+  difyIntegration.value = dify
+  if (selectedObjectId.value && !objects.some((item) => item.object_id === selectedObjectId.value)) {
+    selectedObjectId.value = ''
   }
   selectedTemplate.value ??= templates[0] ? { ...templates[0] } : null
 }
@@ -441,6 +455,8 @@ async function submitQuestion(nextQuestion?: string) {
   isLoading.value = true
   error.value = ''
   result.value = null
+  evidenceOpen.value = false
+  executionOpen.value = false
   try {
     result.value = await askData(content, selectedObjectId.value)
     conversationHistory.value.push({
@@ -465,7 +481,7 @@ async function handleVisionUpload(event: Event) {
   try {
     visionAnalysis.value = await inspectImage(
       file,
-      selectedObjectId.value,
+      selectedObjectId.value || 'line_01',
       `${question.value}\n请将可见信息与业务对象关联，并区分事实、推断和不确定项。`,
     )
   } catch (visionError) {
@@ -476,9 +492,14 @@ async function handleVisionUpload(event: Event) {
   }
 }
 
-function runDeepAnalysis() {
-  const base = question.value.trim() || '分析当前对象的经营与运行状态'
-  void submitQuestion(`${base}\n请进一步分析关键影响因素、异常链路和可验证证据。`)
+function submitOnEnter(event: KeyboardEvent) {
+  if (event.shiftKey) return
+  event.preventDefault()
+  void submitQuestion()
+}
+
+function openDifyTools() {
+  window.open(difyIntegration.value?.console_url || 'http://127.0.0.1/tools', '_blank', 'noopener')
 }
 
 function switchWorkspace(next: Workspace) {
@@ -494,6 +515,8 @@ function resetConversation() {
   conversationHistory.value = []
   result.value = null
   question.value = ''
+  evidenceOpen.value = false
+  executionOpen.value = false
 }
 
 function applyModelPreset() {
@@ -634,7 +657,6 @@ onMounted(async () => {
     loadModelGateway(),
     loadEvaluation(),
   ])
-  await submitQuestion()
 })
 </script>
 
@@ -653,7 +675,7 @@ onMounted(async () => {
 
       <nav class="primary-nav" aria-label="主导航">
         <button
-          v-for="item in navItems"
+          v-for="item in primaryNavItems"
           :key="item.key"
           class="nav-item"
           :class="{ 'nav-item--active': workspace === item.key }"
@@ -662,6 +684,28 @@ onMounted(async () => {
           <component :is="item.icon" :size="18" />
           <span>{{ item.label }}</span>
         </button>
+        <button
+          class="nav-item nav-advanced-toggle"
+          :class="{ 'nav-item--active': advancedNavItems.some((item) => item.key === workspace) }"
+          :aria-expanded="showAdvancedNav"
+          @click="showAdvancedNav = !showAdvancedNav"
+        >
+          <SlidersHorizontal :size="18" />
+          <span>高级管理</span>
+          <ChevronRight class="nav-expand-icon" :class="{ open: showAdvancedNav }" :size="14" />
+        </button>
+        <div v-if="showAdvancedNav" class="advanced-nav">
+          <button
+            v-for="item in advancedNavItems"
+            :key="item.key"
+            class="nav-item nav-item--nested"
+            :class="{ 'nav-item--active': workspace === item.key }"
+            @click="switchWorkspace(item.key)"
+          >
+            <component :is="item.icon" :size="16" />
+            <span>{{ item.label }}</span>
+          </button>
+        </div>
       </nav>
 
       <div class="sidebar-bottom">
@@ -690,141 +734,72 @@ onMounted(async () => {
       </header>
 
       <section v-if="workspace === 'ask'" class="workspace ask-workspace">
-        <div class="workspace-heading">
-          <div>
-            <span class="eyebrow">SEMANTIC INTELLIGENCE</span>
-            <h1>从业务问题，下潜到可信答案</h1>
-            <p>对象锚定、指标绑定、权限校验和证据追溯在同一条执行链完成。</p>
-          </div>
-          <button class="evidence-toggle" @click="evidenceOpen = !evidenceOpen">
-            <PanelRightClose v-if="evidenceOpen" :size="17" />
-            <PanelRightOpen v-else :size="17" />
-            {{ evidenceOpen ? '收起证据' : '展开证据' }}
-          </button>
-          <button v-if="conversationHistory.length" class="evidence-toggle" @click="resetConversation">
-            <X :size="16" />新对话
-          </button>
+        <div class="ask-hero">
+          <div><span class="eyebrow">可信问数</span><h1>问一句，直接看到数据</h1><p>用日常业务语言提问。对象、指标和权限由系统自动处理。</p></div>
+          <button v-if="conversationHistory.length" class="quiet-action" @click="resetConversation"><X :size="15" />清空</button>
         </div>
 
-        <div class="ask-layout" :class="{ 'ask-layout--compact': !evidenceOpen }">
+        <div class="ask-layout">
           <div class="answer-stream">
-            <div v-if="conversationHistory.length > 1" class="conversation-history">
-              <span>当前对话 · {{ conversationHistory.length }} 轮</span>
-              <button v-for="turn in conversationHistory.slice(0, -1).slice(-3)" :key="turn.traceId" @click="submitQuestion(turn.question)">
-                <b>{{ turn.question }}</b><small>{{ turn.answer }}</small>
-              </button>
-            </div>
-            <form class="question-box" @submit.prevent="submitQuestion()">
-              <div class="question-icon"><Sparkles :size="20" /></div>
-              <textarea v-model="question" aria-label="业务问题" rows="2"></textarea>
+            <form class="question-box question-box--simple" @submit.prevent="submitQuestion()">
+              <div class="question-icon"><Sparkles :size="21" /></div>
+              <textarea v-model="question" aria-label="输入要查询的业务问题" placeholder="例如：为什么一号线昨天订单达成率下降？" rows="2" @keydown.enter="submitOnEnter"></textarea>
               <div class="question-footer">
                 <div class="question-options">
-                  <label class="object-scope"><Boxes :size="14" /><select v-model="selectedObjectId" aria-label="查询对象范围"><option v-for="item in objectInstances" :key="item.object_id" :value="item.object_id">{{ item.label }} · {{ item.object_type }}</option></select></label>
-                  <button type="button" @click="runDeepAnalysis"><GitBranch :size="14" />深入分析</button>
-                  <label class="vision-upload"><input type="file" accept="image/jpeg,image/png,image/webp" @change="handleVisionUpload" /><UploadCloud :size="14" />{{ visionLoading ? '理解中…' : '图像理解' }}</label>
+                  <label class="object-scope"><Boxes :size="14" /><select v-model="selectedObjectId" aria-label="查询范围"><option value="">自动识别范围</option><option v-for="item in objectInstances" :key="item.object_id" :value="item.object_id">{{ item.label }}</option></select></label>
+                  <label class="vision-upload" title="上传现场图片辅助分析"><input type="file" accept="image/jpeg,image/png,image/webp" @change="handleVisionUpload" /><UploadCloud :size="14" />{{ visionLoading ? '识别中…' : '附图' }}</label>
                 </div>
-                <button class="send-button" type="submit" :disabled="isLoading" aria-label="开始分析">
-                  <Send :size="17" />
-                </button>
+                <button class="send-button send-button--labeled" type="submit" :disabled="isLoading || !question.trim()">{{ isLoading ? '查询中' : '查询' }}<Send :size="16" /></button>
               </div>
             </form>
 
-            <div class="quick-questions">
-              <button @click="submitQuestion('分析一号线昨天的 OEE')">昨日 OEE</button>
-              <button @click="submitQuestion('一号线昨天停机时长是多少？')">停机损失</button>
-              <button @click="submitQuestion('一号线昨天实际产量是多少？')">产量完成</button>
+            <div v-if="!result && !isLoading && !error" class="quick-questions">
+              <span>可以这样问</span>
+              <button @click="submitQuestion('分析一号线昨天的 OEE')">一号线昨天 OEE 怎么样？</button>
+              <button @click="submitQuestion('一号线昨天停机时长是多少？')">昨天停机损失多少？</button>
+              <button @click="submitQuestion('为什么一号线昨天订单达成率下降？')">订单达成率为什么下降？</button>
             </div>
 
-            <article v-if="visionAnalysis" class="vision-result"><div><UploadCloud :size="17" /><strong>跨模态对象证据</strong><span>{{ visionAnalysis.object_id }} · {{ visionAnalysis.model }}</span></div><p>{{ visionAnalysis.analysis }}</p><small>{{ visionAnalysis.note }}</small></article>
-
-            <div v-if="isLoading" class="analysis-card loading-card">
-              <div class="dive-loader"><span></span><span></span><span></span></div>
-              <div>
-                <strong>正在构建受控语义计划</strong>
-                <p>Acquire 获取对象 → Build 构建指标 → Compute 受控计算</p>
-              </div>
-            </div>
-
+            <article v-if="visionAnalysis" class="vision-result"><div><UploadCloud :size="17" /><strong>图片识别结果</strong><span>{{ visionAnalysis.object_id }}</span></div><p>{{ visionAnalysis.analysis }}</p><small>{{ visionAnalysis.note }}</small></article>
+            <div v-if="isLoading" class="analysis-card loading-card"><div class="dive-loader"><span></span><span></span><span></span></div><div><strong>正在查询并校验</strong><p>识别业务对象、统一指标口径并核对权限</p></div></div>
             <div v-else-if="error" class="error-card">{{ error }}</div>
 
             <article v-else-if="result" class="analysis-card result-card">
               <div class="result-meta">
-                <span class="verified-badge"><ShieldCheck :size="14" />语义已校验</span>
+                <span v-if="result.status === 'completed'" class="verified-badge"><ShieldCheck :size="14" />结果已校验</span>
+                <span v-else class="clarify-badge"><CircleDot :size="13" />需要补充信息</span>
                 <span>{{ result.semantic_version }}</span>
-                <span>{{ result.trace_id }}</span>
               </div>
               <h2>{{ result.answer }}</h2>
 
               <div v-if="result.data.current !== undefined" class="metric-stage">
-                <div class="metric-primary">
-                  <span>{{ currentMetricLabel }}</span>
-                  <strong>{{ result.data.current }}<small>{{ result.data.unit }}</small></strong>
-                  <em :class="{ positive: (result.data.delta ?? 0) >= 0 }">
-                    {{ (result.data.delta ?? 0) >= 0 ? '+' : '' }}{{ result.data.delta }}{{ result.data.unit }} 较前日
-                  </em>
-                </div>
-                <div class="comparison-visual">
-                  <div v-for="row in result.data.rows" :key="row.period" class="period-column">
-                    <span>{{ row.value }}{{ result.data.unit }}</span>
-                    <div class="column-track">
-                      <i :style="{ height: `${Math.max(22, row.value)}%` }"></i>
-                    </div>
-                    <small>{{ row.period.slice(5) }}</small>
-                  </div>
-                </div>
+                <div class="metric-primary"><span>{{ currentMetricLabel }}</span><strong>{{ result.data.current }}<small>{{ result.data.unit }}</small></strong><em :class="{ positive: (result.data.delta ?? 0) >= 0 }">{{ (result.data.delta ?? 0) >= 0 ? '+' : '' }}{{ result.data.delta }}{{ result.data.unit }} 较前日</em></div>
+                <div class="comparison-visual"><div v-for="row in result.data.rows" :key="row.period" class="period-column"><span>{{ row.value }}{{ result.data.unit }}</span><div class="column-track"><i :style="{ height: `${Math.max(22, row.value)}%` }"></i></div><small>{{ row.period.slice(5) }}</small></div></div>
               </div>
 
               <div v-if="result.data.contributors?.length" class="contributors">
-                <div class="section-label"><Zap :size="15" />关联影响因子</div>
-                <div class="contributor-list">
-                  <div v-for="(item, index) in result.data.contributors" :key="item.object" class="contributor-row">
-                    <span class="rank">0{{ index + 1 }}</span>
-                    <div><strong>{{ item.label }}</strong><small>{{ item.object }}</small></div>
-                    <div class="impact-line"><i :style="{ width: `${Math.min(item.minutes * 1.8, 100)}%` }"></i></div>
-                    <b>{{ item.minutes }} min</b>
-                  </div>
-                </div>
+                <div class="section-label"><Zap :size="15" />主要影响</div>
+                <div class="contributor-list"><div v-for="(item, index) in result.data.contributors" :key="item.object" class="contributor-row"><span class="rank">0{{ index + 1 }}</span><div><strong>{{ item.label }}</strong><small>{{ item.object }}</small></div><div class="impact-line"><i :style="{ width: `${Math.min(item.minutes * 1.8, 100)}%` }"></i></div><b>{{ item.minutes }} min</b></div></div>
               </div>
 
-              <div class="plan-strip">
-                <div v-for="stage in result.plan.abc" :key="stage.code">
-                  <b>{{ stage.code }}</b><span>{{ stage.name }} · {{ stage.summary }}</span>
-                </div>
+              <div class="result-actions">
+                <button v-if="result.evidence.length" @click="evidenceOpen = !evidenceOpen"><BookOpen :size="14" />{{ evidenceOpen ? '收起证据' : `查看证据（${result.evidence.length}）` }}</button>
+                <button @click="executionOpen = !executionOpen"><GitBranch :size="14" />{{ executionOpen ? '收起过程' : '查看计算过程' }}</button>
+                <code>{{ result.trace_id }}</code>
               </div>
 
-              <div class="followups">
-                <span>继续探索</span>
-                <button v-for="followup in result.suggested_followups" :key="followup" @click="submitQuestion(followup)">
-                  {{ followup }}<ArrowRight :size="14" />
-                </button>
-              </div>
+              <div v-if="executionOpen" class="plan-strip"><div v-for="stage in result.plan.abc" :key="stage.code"><b>{{ stage.code }}</b><span>{{ stage.name }} · {{ stage.summary }}</span></div></div>
+
+              <aside v-if="evidenceOpen" class="evidence-panel evidence-panel--inline">
+                <div class="panel-title"><div><BookOpen :size="17" /><strong>答案证据</strong></div><span>{{ result.evidence.length }} 项</span></div>
+                <div class="semantic-path"><span>查询路径</span><div class="path-flow"><b>{{ currentObjectLabel }}</b><ChevronRight :size="13" /><b>{{ currentMetricLabel }}</b></div></div>
+                <div class="evidence-list"><article v-for="item in result.evidence" :key="item.reference"><div class="evidence-type"><FileCode2 v-if="item.type === 'semantic_contract'" :size="15" /><Database v-else :size="15" />{{ item.type }}</div><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><code>{{ item.reference }}</code></article></div>
+                <div class="freshness"><span class="pulse-dot"></span><div><strong>数据更新时间</strong><span>{{ result.data_freshness }}</span></div></div>
+              </aside>
+
+              <div class="followups"><span>继续追问</span><button v-for="followup in result.suggested_followups" :key="followup" @click="submitQuestion(followup)">{{ followup }}<ArrowRight :size="14" /></button></div>
             </article>
           </div>
-
-          <aside v-if="evidenceOpen" class="evidence-panel">
-            <div class="panel-title">
-              <div><BookOpen :size="17" /><strong>答案证据</strong></div>
-              <span>{{ result?.evidence.length ?? 0 }} 项</span>
-            </div>
-            <div class="semantic-path">
-              <span>语义路径</span>
-              <div class="path-flow">
-                <b>一号生产线</b><ChevronRight :size="13" /><b>订单达成率</b><ChevronRight :size="13" /><b>日</b>
-              </div>
-            </div>
-            <div class="evidence-list">
-              <article v-for="item in result?.evidence ?? []" :key="item.reference">
-                <div class="evidence-type"><FileCode2 v-if="item.type === 'semantic_contract'" :size="15" /><Database v-else :size="15" />{{ item.type }}</div>
-                <strong>{{ item.title }}</strong>
-                <p>{{ item.detail }}</p>
-                <code>{{ item.reference }}</code>
-              </article>
-            </div>
-            <div class="freshness">
-              <span class="pulse-dot"></span>
-              <div><strong>数据新鲜度</strong><span>{{ result?.data_freshness ?? '等待查询' }}</span></div>
-            </div>
-          </aside>
         </div>
       </section>
 
@@ -867,7 +842,7 @@ onMounted(async () => {
           <section class="builder-dialog">
             <header><div><span class="eyebrow">GUIDED DOMAIN BUILDER</span><h2>用业务问题构建语义</h2><p>无需理解本体术语，FATHOM 会自动生成候选模型。</p></div><button @click="builderOpen = false"><X :size="18" /></button></header>
             <div class="builder-progress"><span v-for="step in 4" :key="step" :class="{ active: builderStep >= step }"><i>{{ step }}</i>{{ ['连接数据', '选择场景', '提交问题', '评测发布'][step - 1] }}</span></div>
-            <div v-if="builderStep === 1" class="builder-body"><h3>数据已经在哪里？</h3><p>选择已配置的数据源。事实数据默认留在原处，只读取结构和必要样本。</p><label class="builder-source">数据源<select v-model="builderSource"><option value="">请选择</option><option v-for="source in dataSources" :key="source.key" :value="source.key">{{ source.name }} · {{ source.connector_type }} · {{ source.status }}</option></select></label><p v-if="!dataSources.length" class="builder-hint">还没有数据源，请先到“数据连接”保存并测试连接。</p></div>
+            <div v-if="builderStep === 1" class="builder-body"><h3>数据已经在哪里？</h3><p>选择已配置的数据源。事实数据默认留在原处，只读取结构和必要样本。</p><label class="builder-source">数据源<select v-model="builderSource"><option value="">请选择</option><option v-for="source in dataSources" :key="source.key" :value="source.key">{{ source.name }} · {{ source.connector_type }} · {{ source.status }}</option></select></label><p v-if="!dataSources.length" class="builder-hint">还没有数据源，请先到“数据接入”保存并测试连接。</p></div>
             <div v-else-if="builderStep === 2" class="builder-body"><h3>从一个有限场景开始</h3><p>系统会加载制造业模板，只生成当前场景真正需要的对象和指标。</p><div class="scenario-grid"><button class="selected" @click="builderStep = 3"><Boxes :size="18" /><strong>生产执行与 OEE</strong><small>订单、产线、设备、班次、停机</small></button><button @click="builderStep = 3"><ShieldCheck :size="18" /><strong>质量追溯</strong><small>批次、检验、缺陷、工艺参数</small></button><button @click="builderStep = 3"><Wrench :size="18" /><strong>设备运维</strong><small>设备、报警、工单、备件</small></button></div></div>
             <div v-else-if="builderStep === 3" class="builder-body"><h3>业务人员经常问什么？</h3><p>每行一个问题。系统将反向识别需要的对象、关系、指标和权限。</p><textarea v-model="builderQuestions" rows="8"></textarea></div>
             <div v-else class="builder-body builder-result"><span class="builder-success"><Check :size="24" /></span><h3>ONN 候选已生成</h3><p>系统完成真实 Schema 发现与候选映射；所有内容仍在候选区，需补充指标口径并通过评测和人工审批。</p><div class="builder-stats"><span><b>{{ builderScaffold.objects?.length ?? 0 }}</b>候选对象</span><span><b>{{ builderScaffold.attributes?.length ?? 0 }}</b>候选属性</span><span><b>{{ builderScaffold.relations?.length ?? 0 }}</b>候选关系</span></div><div class="builder-receipts"><span v-for="receipt in builderRun?.receipts ?? []" :key="receipt.sequence">{{ receipt.sequence }} · {{ receipt.summary }}</span></div></div>
@@ -925,17 +900,16 @@ onMounted(async () => {
       </section>
 
       <section v-else-if="workspace === 'connections'" class="workspace catalog-workspace">
-        <div class="workspace-heading"><div><span class="eyebrow">OPEN SEMANTIC FABRIC</span><h1>数据连接与开放</h1><p>数据源由 FATHOM 治理；Dify、BI、孪生和 Agent 消费已授权的语义能力。</p></div><button class="primary-action" @click="connectionPanelOpen = !connectionPanelOpen"><Link2 :size="16" />新建数据源</button></div>
+        <div class="workspace-heading"><div><span class="eyebrow">数据接入</span><h1>连接数据和上层应用</h1><p>先接入企业数据，再把经过授权的问数能力提供给其他应用。</p></div><button class="primary-action" @click="connectionPanelOpen = !connectionPanelOpen"><Link2 :size="16" />新建数据源</button></div>
         <div class="connection-section"><h2>上层应用</h2><div class="connection-grid">
-          <article class="connection-card connection-card--featured"><div class="connection-logo">D</div><div><span class="online">已就绪</span><h3>Dify</h3><p>Tool Plugin · HTTP API · Workflow Trigger</p></div><ChevronRight :size="18" /></article>
-          <article class="connection-card"><div class="connection-logo"><LayoutGrid :size="20" /></div><div><span>可配置</span><h3>BI / Notebook</h3><p>REST · SQL · Arrow</p></div><ChevronRight :size="18" /></article>
-          <article class="connection-card"><div class="connection-logo"><Boxes :size="20" /></div><div><span>可配置</span><h3>数字孪生</h3><p>Object Context · Events</p></div><ChevronRight :size="18" /></article>
-          <article class="connection-card"><div class="connection-logo"><Workflow :size="20" /></div><div><span>可配置</span><h3>Agent / MCP</h3><p>Tools · Resources · Traces</p></div><ChevronRight :size="18" /></article>
-        </div></div>
+          <button class="connection-card connection-card--featured" @click="openDifyTools"><div class="connection-logo">D</div><div><span :class="{ online: difyIntegration?.service_running }">{{ difyIntegration?.message ?? '正在检测 Dify' }}</span><h3>Dify 工具</h3><p>点击打开 Dify 的工具页面</p></div><ChevronRight :size="18" /></button>
+          <article class="connection-card"><div class="connection-logo"><LayoutGrid :size="20" /></div><div><span>标准接口</span><h3>BI / Notebook</h3><p>通过 REST 与 SQL 消费指标</p></div></article>
+          <article class="connection-card"><div class="connection-logo"><Workflow :size="20" /></div><div><span>标准协议</span><h3>Agent / MCP</h3><p>调用问数、对象上下文和工具</p></div></article>
+        </div><div class="integration-actions"><a :href="difyIntegration?.schema_url || '/api/v1/integrations/dify/openapi.yaml'" download><Download :size="14" />下载 FATHOM 工具配置</a><button @click="openDifyTools">打开 Dify 工具页<ArrowRight :size="14" /></button></div></div>
         <div class="connection-section">
-          <div class="section-heading"><h2>企业事实源</h2><span>覆盖 SQL · KV · 图 · 时序 · 向量 · 文本</span></div>
+          <div class="section-heading"><h2>企业事实源</h2><button class="quiet-action" @click="showAllConnectors = !showAllConnectors">{{ showAllConnectors ? '收起类型' : `查看全部 ${connectorTypes.length} 种` }}</button></div>
           <div class="connector-matrix">
-            <article v-for="connector in connectorTypes" :key="connector.key">
+            <article v-for="connector in (showAllConnectors ? connectorTypes : connectorTypes.slice(0, 6))" :key="connector.key">
               <span class="connector-state" :class="{ bundled: connector.driver_available }">{{ connector.bundled ? '内置' : connector.driver_available ? '驱动可用' : '按需' }}</span>
               <Database :size="18" /><strong>{{ connector.label }}</strong><small>{{ connector.category }}</small>
             </article>

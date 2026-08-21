@@ -135,6 +135,14 @@ def test_operational_datasets_export_as_utf8_csv(tmp_path: Path) -> None:
     assert "unplanned_downtime" in events.content.decode("utf-8-sig")
 
 
+def test_dify_tool_schema_is_downloadable(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.get("/api/v1/integrations/dify/openapi.yaml")
+    assert response.status_code == 200
+    assert "openapi: 3.1.0" in response.text
+    assert "ask_data" in response.text
+
+
 def test_dbt_semantic_layer_import_creates_onn_candidate(tmp_path: Path) -> None:
     dbt_yaml = """
 semantic_models:

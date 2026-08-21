@@ -40,6 +40,14 @@ export interface ObjectInstance {
   updated_at: string
 }
 
+export interface DifyIntegrationStatus {
+  service_running: boolean
+  setup_completed: boolean
+  console_url: string
+  schema_url: string
+  message: string
+}
+
 export interface AskResult {
   status: string
   answer: string

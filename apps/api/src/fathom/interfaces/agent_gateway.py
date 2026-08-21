@@ -66,7 +66,7 @@ def agent_gateway_capabilities() -> dict[str, Any]:
             "MCP clients",
             "A2A clients",
             "workflow and agent platforms",
-            "BI, digital twin and operations applications",
+            "BI and operations applications",
         ],
         "shared_controls": [
             "identity_scope",
@@ -278,7 +278,7 @@ def _mcp_tools() -> list[dict[str, Any]]:
         {
             "name": "fathom.get_object_context",
             "title": "读取 ONN 对象上下文",
-            "description": "读取对象实例、属性和有效关系，供 Agent 与数字孪生消费。",
+            "description": "读取对象实例、属性和有效关系，供 Agent 与业务应用消费。",
             "inputSchema": {
                 "type": "object",
                 "required": ["object_id"],

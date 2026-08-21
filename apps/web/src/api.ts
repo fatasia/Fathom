@@ -5,6 +5,7 @@ import type {
   BackupItem,
   ConnectorType,
   DataSource,
+  DifyIntegrationStatus,
   EffectiveConfiguration,
   EvaluationReport,
   ModelProvider,
@@ -49,11 +50,15 @@ export function runAgentFlow(payload: {
   })
 }
 
-export function askData(question: string, objectId: string): Promise<AskResult> {
+export function askData(question: string, objectId?: string): Promise<AskResult> {
   return request('/api/v1/query/ask', {
     method: 'POST',
-    body: JSON.stringify({ question, scope: { object_id: objectId } }),
+    body: JSON.stringify({ question, scope: objectId ? { object_id: objectId } : {} }),
   })
+}
+
+export function fetchDifyIntegrationStatus(): Promise<DifyIntegrationStatus> {
+  return request('/api/v1/integrations/dify/status')
 }
 
 export async function fetchObjectInstances(): Promise<ObjectInstance[]> {

@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Annotated
@@ -156,6 +157,44 @@ def health(request: Request) -> dict:
 @router.get("/system/capabilities")
 def capabilities(request: Request) -> dict:
     return detect_capabilities(request.app.state.settings)
+
+
+@router.get("/integrations/dify/status")
+def dify_integration_status(request: Request) -> dict:
+    console_base_url = request.app.state.settings.dify_console_url.rstrip("/")
+    service_running = False
+    setup_completed = False
+    message = "Dify 未启动"
+    try:
+        setup_url = f"{console_base_url}/console/api/setup"
+        with urllib.request.urlopen(setup_url, timeout=1.2) as response:
+            payload = json.load(response)
+        service_running = True
+        setup_completed = payload.get("step") == "finished"
+        message = "Dify 已启动；点击打开工具页" if setup_completed else "Dify 等待初始化"
+    except (OSError, ValueError, urllib.error.URLError):
+        pass
+    return {
+        "service_running": service_running,
+        "setup_completed": setup_completed,
+        "console_url": f"{console_base_url}/tools",
+        "schema_url": "/api/v1/integrations/dify/openapi.yaml",
+        "message": message,
+    }
+
+
+@router.get("/integrations/dify/openapi.yaml", response_class=FileResponse)
+def download_dify_openapi() -> FileResponse:
+    schema_path = (
+        Path(__file__).resolve().parents[5] / "integrations" / "dify" / "fathom-openapi.yaml"
+    )
+    if not schema_path.is_file():
+        raise HTTPException(status_code=404, detail="FATHOM 工具配置不存在")
+    return FileResponse(
+        schema_path,
+        media_type="application/yaml",
+        filename="fathom-openapi.yaml",
+    )
 
 
 @router.get("/system/configuration")
