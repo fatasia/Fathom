@@ -18,6 +18,7 @@ from fathom.application.capabilities import detect_capabilities
 from fathom.application.conversations import ConversationCreate, ConversationRename
 from fathom.application.data_sources import DataSourceInput, connector_catalog
 from fathom.application.governance import GovernanceDecision, SemanticAssetProposal
+from fathom.application.evaluation import golden_question_catalog
 from fathom.application.ingestion import (
     IndustrialEventInput,
     MetricObservationInput,
@@ -119,6 +120,11 @@ def latest_evaluation(request: Request) -> dict:
             "report": report,
         }
     )
+
+
+@router.get("/governance/golden-question-set")
+def get_golden_question_set() -> dict:
+    return golden_question_catalog()
 
 
 @router.post("/governance/evaluations")

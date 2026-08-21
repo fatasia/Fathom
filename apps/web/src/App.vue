@@ -55,6 +55,7 @@ import {
   fetchDataSources,
   fetchDifyIntegrationStatus,
   fetchLatestEvaluation,
+  fetchGoldenQuestionSet,
   fetchKnowledgeBases,
   fetchKnowledgeDocuments,
   fetchModelGateway,
@@ -106,6 +107,7 @@ import type {
   DifyIntegrationStatus,
   EffectiveConfiguration,
   EvaluationReport,
+  GoldenQuestionSet,
   KnowledgeBase,
   KnowledgeDocument,
   KnowledgeHit,
@@ -175,6 +177,9 @@ const modelPresets = ref<ModelProviderPreset[]>([])
 const modelRoutes = ref<ModelRoute[]>([])
 const effectiveConfiguration = ref<EffectiveConfiguration | null>(null)
 const evaluationReport = ref<EvaluationReport | null>(null)
+const goldenQuestionSet = ref<GoldenQuestionSet | null>(null)
+const goldenQuestionCategory = ref('all')
+const goldenQuestionQuery = ref('')
 const governanceMessage = ref('')
 const semanticChanges = ref<SemanticChange[]>([])
 const selectedChangeId = ref('')
@@ -585,12 +590,14 @@ async function loadModelGateway() {
 }
 
 async function loadEvaluation() {
-  const [report, changes] = await Promise.all([
+  const [report, changes, questionSet] = await Promise.all([
     fetchLatestEvaluation(),
     fetchSemanticChanges(),
+    fetchGoldenQuestionSet(),
   ])
   evaluationReport.value = report
   semanticChanges.value = changes
+  goldenQuestionSet.value = questionSet
 }
 
 async function runGoldenSet() {
@@ -624,6 +631,14 @@ const evaluationGateLabels: Record<string, string> = {
   evidence_completeness: '证据完整',
   safe_blocking: '安全阻断',
 }
+const filteredGoldenQuestions = computed(() => {
+  const query = goldenQuestionQuery.value.trim().toLowerCase()
+  return (goldenQuestionSet.value?.cases ?? []).filter((item) => {
+    const categoryMatches = goldenQuestionCategory.value === 'all' || item.category === goldenQuestionCategory.value
+    const queryMatches = !query || `${item.question} ${item.expected} ${item.rule}`.toLowerCase().includes(query)
+    return categoryMatches && queryMatches
+  })
+})
 
 const builderScaffold = computed(() => {
   const output = builderRun.value?.output as {
@@ -1642,8 +1657,14 @@ onMounted(async () => {
         <div v-if="evaluationReport?.gates" class="evaluation-gates"><span v-for="(gate, key) in evaluationReport.gates" :key="key" :data-passed="gate.passed"><Check :size="12" />{{ evaluationGateLabels[key] ?? key }} · {{ gate.total }} 项</span></div>
         <section class="golden-set-card">
           <div><span class="eyebrow">GOLDEN QUESTION SET</span><h2>黄金问题集</h2><p>覆盖语义规划、确定性数值、证据完整性和未知问题安全拒答。</p></div>
-          <div class="golden-set-stats"><span><b>100</b>语义规划</span><span><b>5</b>数值基线</span><span><b>5</b>证据校验</span><span><b>10</b>安全拒答</span></div>
+          <div class="golden-set-stats"><span v-for="category in goldenQuestionSet?.categories ?? []" :key="category.key"><b>{{ category.count }}</b>{{ category.label }}</span></div>
           <button class="primary-action" :disabled="governanceBusy === 'golden-set'" @click="runGoldenSet"><Play :size="14" />{{ governanceBusy === 'golden-set' ? '运行中…' : '运行黄金问题集' }}</button>
+        </section>
+        <section class="golden-question-panel">
+          <header><div><strong>问题明细</strong><span>{{ filteredGoldenQuestions.length }} / {{ goldenQuestionSet?.total ?? 0 }} 项</span></div><label><Search :size="13" /><input v-model="goldenQuestionQuery" placeholder="搜索问题、预期结果或规则" /></label></header>
+          <nav aria-label="黄金问题分类"><button :class="{ active: goldenQuestionCategory === 'all' }" @click="goldenQuestionCategory = 'all'">全部</button><button v-for="category in goldenQuestionSet?.categories ?? []" :key="category.key" :class="{ active: goldenQuestionCategory === category.key }" @click="goldenQuestionCategory = category.key">{{ category.label }} · {{ category.count }}</button></nav>
+          <div class="golden-question-table"><div class="golden-question-head"><span>问题</span><span>预期结果</span><span>验证规则</span><span>状态</span></div><article v-for="item in filteredGoldenQuestions" :key="item.id"><div><code>{{ item.id }}</code><strong>{{ item.question }}</strong></div><span>{{ item.expected }}</span><span>{{ item.rule }}</span><b :data-passed="evaluationReport?.passed ?? false">{{ evaluationReport ? (evaluationReport.passed ? '通过' : '需复核') : '待评测' }}</b></article><div v-if="!filteredGoldenQuestions.length" class="empty-state">没有匹配的黄金问题。</div></div>
+          <footer>{{ goldenQuestionSet?.scope_note }}</footer>
         </section>
         <div class="suggestion-list">
           <article v-for="change in semanticChanges" :key="change.change_id" :class="{ expanded: selectedChangeId === change.change_id }">

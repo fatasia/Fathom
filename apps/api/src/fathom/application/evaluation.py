@@ -71,6 +71,65 @@ def certified_cases() -> list[tuple[str, str]]:
     ]
 
 
+def golden_question_catalog() -> dict[str, Any]:
+    """Return the exact cases used by the production evaluation gate."""
+    semantic_cases = [
+        {
+            "id": f"semantic-{index:03d}",
+            "category": "semantic_plan",
+            "question": question,
+            "expected": f"绑定指标：{expected}",
+            "rule": "指标、对象、时间与范围必须通过语义约束",
+        }
+        for index, (question, expected) in enumerate(certified_cases(), start=1)
+    ]
+    execution_cases = [
+        {
+            "id": f"execution-{index:02d}",
+            "category": "deterministic_execution",
+            "question": f"查询一号线昨天的{CERTIFIED_METRIC_ALIASES[key][0]}",
+            "expected": f"基准值：{value:g}（严格一致）",
+            "rule": "由确定性口径执行，不允许模型编造数值",
+        }
+        for index, (key, value) in enumerate(EXECUTION_CASES.items(), start=1)
+    ]
+    evidence_cases = [
+        {
+            "id": f"evidence-{index:02d}",
+            "category": "evidence_completeness",
+            "question": f"查询一号线昨天的{CERTIFIED_METRIC_ALIASES[key][0]}",
+            "expected": "包含 trace ID，且至少 2 条数据证据",
+            "rule": "结果必须可追溯到口径、数据与执行链路",
+        }
+        for index, key in enumerate(EXECUTION_CASES, start=1)
+    ]
+    safety_cases = [
+        {
+            "id": f"safety-{index:02d}",
+            "category": "safe_blocking",
+            "question": question,
+            "expected": "澄清或安全拒答，不绑定未知指标",
+            "rule": "未知、越权或证据不足时禁止猜测",
+        }
+        for index, question in enumerate(SAFETY_CASES, start=1)
+    ]
+    cases = semantic_cases + execution_cases + evidence_cases + safety_cases
+    return {
+        "suite_key": "manufacturing.execution.semantic-plan.v1",
+        "semantic_version": "manufacturing.execution@0.1.0",
+        "threshold": 0.99,
+        "scope_note": "内置数据只用于验证评测机制；企业上线应替换为自己的问题与真实基准值。",
+        "categories": [
+            {"key": "semantic_plan", "label": "语义规划", "count": len(semantic_cases)},
+            {"key": "deterministic_execution", "label": "确定性数值", "count": len(execution_cases)},
+            {"key": "evidence_completeness", "label": "证据完整", "count": len(evidence_cases)},
+            {"key": "safe_blocking", "label": "安全拒答", "count": len(safety_cases)},
+        ],
+        "total": len(cases),
+        "cases": cases,
+    }
+
+
 class EvaluationService:
     def __init__(
         self,

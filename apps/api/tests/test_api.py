@@ -665,6 +665,19 @@ def test_governed_evolution_requires_evaluation_and_supports_rollback(
     assert "完成率" not in rolled_back_metric["aliases"]
 
 
+def test_golden_question_set_is_visible_and_matches_evaluation_suite(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        catalog = client.get("/api/v1/governance/golden-question-set")
+        evaluation = client.post("/api/v1/governance/evaluations")
+    assert catalog.status_code == 200
+    payload = catalog.json()
+    assert payload["total"] == 120
+    assert sum(item["count"] for item in payload["categories"]) == 120
+    assert len(payload["cases"]) == 120
+    assert any(item["category"] == "safe_blocking" for item in payload["cases"])
+    assert evaluation.json()["total"] == 100
+
+
 def test_governed_candidate_can_publish_directly_after_evaluation(tmp_path: Path) -> None:
     change_id = "chg_downtime_alias"
     with make_client(tmp_path) as client:

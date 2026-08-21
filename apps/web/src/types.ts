@@ -318,6 +318,22 @@ export interface EvaluationReport {
   gates?: Record<string, { passed: boolean; total: number; correct?: number; failures?: unknown[] }>
 }
 
+export interface GoldenQuestionSet {
+  suite_key: string
+  semantic_version: string
+  threshold: number
+  scope_note: string
+  total: number
+  categories: Array<{ key: string; label: string; count: number }>
+  cases: Array<{
+    id: string
+    category: string
+    question: string
+    expected: string
+    rule: string
+  }>
+}
+
 export interface PipelinePreview {
   run_id: string
   key: string

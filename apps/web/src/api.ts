@@ -10,6 +10,7 @@ import type {
   DifyIntegrationStatus,
   EffectiveConfiguration,
   EvaluationReport,
+  GoldenQuestionSet,
   KnowledgeBase,
   KnowledgeDocument,
   KnowledgeHit,
@@ -394,6 +395,10 @@ export async function fetchLatestEvaluation(): Promise<EvaluationReport | null> 
     '/api/v1/governance/evaluations/latest',
   )
   return result.report
+}
+
+export function fetchGoldenQuestionSet(): Promise<GoldenQuestionSet> {
+  return request('/api/v1/governance/golden-question-set')
 }
 
 export function runCertifiedEvaluation(): Promise<EvaluationReport> {
