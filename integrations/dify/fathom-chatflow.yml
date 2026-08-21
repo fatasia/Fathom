@@ -1,0 +1,244 @@
+app:
+  description: 工业企业可信问数、业务知识与通用对话入口
+  icon: 🌊
+  icon_background: '#6D4AFF'
+  icon_type: emoji
+  mode: advanced-chat
+  name: FATHOM 问数助手
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai:1.0.4@3b49ff900a77c9b2cfba21e3cd1180fbfd7edf5ec008bc20564541c7a3914295
+    version: null
+kind: app
+version: 0.7.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload: {}
+    opening_statement: 你好，我是 FATHOM 工业数据助手。你可以直接问企业数据、指标定义、分析方法或平台使用问题。
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions:
+    - OEE 是什么，应该怎样计算？
+    - 昨天的 OEE 是多少？
+    - 如何把生产数据接入 FATHOM？
+    suggested_questions_after_answer:
+      enabled: true
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: tool
+      id: start-fathom
+      source: start
+      sourceHandle: source
+      target: fathom
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: tool
+        targetType: llm
+      id: fathom-llm
+      source: fathom
+      sourceHandle: source
+      target: llm
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: answer
+      id: llm-answer
+      source: llm
+      sourceHandle: source
+      target: answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: 用户输入
+        type: start
+        variables: []
+      height: 73
+      id: start
+      position:
+        x: 80
+        y: 282
+      positionAbsolute:
+        x: 80
+        y: 282
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        is_team_authorization: true
+        paramSchemas:
+        - auto_generate: null
+          default: null
+          form: llm
+          human_description:
+            en_US: 用户的业务问题
+            ja_JP: 用户的业务问题
+            pt_BR: 用户的业务问题
+            zh_Hans: 用户的业务问题
+          input_schema: null
+          label:
+            en_US: question
+            ja_JP: question
+            pt_BR: question
+            zh_Hans: question
+          llm_description: 用户的业务问题
+          max: null
+          min: null
+          multiple: false
+          name: question
+          options: []
+          placeholder:
+            en_US: 用户的业务问题
+            ja_JP: 用户的业务问题
+            pt_BR: 用户的业务问题
+            zh_Hans: 用户的业务问题
+          precision: null
+          required: true
+          scope: null
+          template: null
+          type: string
+        params:
+          question: ''
+        plugin_id: null
+        plugin_unique_identifier: null
+        provider_icon:
+          background: '#252525'
+          content: 😁
+        provider_id: 9b03902c-4a2b-49ef-8c1b-07ace8e361b1
+        provider_name: FATHOM 工业问数
+        provider_show_name: FATHOM 工业问数
+        provider_type: api
+        selected: false
+        title: FATHOM 可信问数
+        tool_configurations: {}
+        tool_description: 在 ONN 与 ABC 约束下查询；直接返回可展示的答案文本
+        tool_label: ask_data
+        tool_name: ask_data
+        tool_node_version: '2'
+        tool_parameters:
+          question:
+            type: mixed
+            value: '{{#sys.query#}}'
+        type: tool
+      height: 52
+      id: fathom
+      position:
+        x: 380
+        y: 282
+      positionAbsolute:
+        x: 380
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        memory:
+          query_prompt_template: '{{#sys.query#}}'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: true
+            size: 10
+        model:
+          completion_params:
+            temperature: 0.2
+          mode: chat
+          name: gpt-5.6-sol
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: fathom-system
+          role: system
+          text: '你是渊渟 FATHOM 的工业数据助手。FATHOM 工具负责企业事实、指标口径、权限与证据。
+
+            回答规则：
+
+            1. FATHOM 返回经过验证的数值或结论时，忠实使用，不重新计算、不改写数值。
+
+            2. FATHOM 明确表示没有企业事实数据时：如果用户询问本企业的数值、状态、原因或预测，必须说明当前没有可验证数据并给出接入建议，禁止编造。
+
+            3. 如果用户询问概念、方法、通用知识、使用帮助或普通对话，即使企业数据尚未接入，也要使用你的通用知识自然回答。
+
+            4. 回答简洁清楚；不要向普通用户展示 JSON、内部字段名或工具调用细节。'
+        - id: fathom-user
+          role: user
+          text: '用户问题：{{#sys.query#}}
+
+
+            FATHOM 受控结果：{{#fathom.text#}}'
+        selected: false
+        title: 可信回答
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: llm
+      position:
+        x: 680
+        y: 282
+      positionAbsolute:
+        x: 680
+        y: 282
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        answer: '{{#llm.text#}}'
+        selected: false
+        title: 直接回复
+        type: answer
+        variables: []
+      height: 102
+      id: answer
+      position:
+        x: 980
+        y: 282
+      positionAbsolute:
+        x: 980
+        y: 282
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.9
+  rag_pipeline_variables: []

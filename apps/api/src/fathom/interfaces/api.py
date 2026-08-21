@@ -11,7 +11,7 @@ from typing import Annotated
 
 import yaml
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fathom.application.agent_mesh import AgentRunInput, agent_mesh_overview
 from fathom.application.capabilities import detect_capabilities
 from fathom.application.data_sources import DataSourceInput, connector_catalog
@@ -407,6 +407,24 @@ def ask_data(payload: AskRequest, request: Request) -> AskResponse:
         )
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.post("/query/answer", response_class=PlainTextResponse)
+def ask_data_text(payload: AskRequest, request: Request) -> PlainTextResponse:
+    """Return only the user-facing answer for chat tools and simple workflows."""
+    try:
+        result = request.app.state.query_service.ask(
+            payload, getattr(request.state, "authorized_objects", None)
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    return PlainTextResponse(
+        result.answer,
+        headers={
+            "X-Fathom-Status": result.status,
+            "X-Fathom-Trace-Id": result.trace_id,
+        },
+    )
 
 
 @router.get("/tools/sql-templates")

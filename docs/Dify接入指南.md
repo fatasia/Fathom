@@ -25,14 +25,15 @@ FATHOM 作为工业数据、语义、本体、指标、权限和证据底座运�
 integrations/dify/fathom-openapi.yaml
 ```
 
-Dify 读取该 OpenAPI 文件，以 `operationId` 生成工具定义，再把一个工具提供方和 5 个工具注册到当前工作区。当前本机导入通过 Dify 自身的工具管理服务完成，没有直接修改 Dify 数据库。
+Dify 读取该 OpenAPI 文件，以 `operationId` 生成工具定义，再把一个工具提供方和 6 个工具注册到当前工作区。当前本机导入通过 Dify 自身的工具管理服务完成，没有直接修改 Dify 数据库。
 
 导入后生成：
 
 | 工具 | 用途 |
 | --- | --- |
 | `search_semantics` | 搜索对象、指标、关系、事件和权限语义 |
-| `ask_data` | 执行带 ONN、ABC、权限和证据的可信问数 |
+| `ask_data` | 执行可信问数并返回可直接展示的自然语言文本 |
+| `ask_data_structured` | 返回 ONN、ABC、权限、证据、质量和 trace 的完整结构 |
 | `search_enterprise_knowledge` | 检索内置与外接知识库并返回来源和相关度 |
 | `get_object_context` | 读取对象属性和一跳关系上下文 |
 | `run_controlled_agent_flow` | 执行可信问数、小白建模或受控诊断链路 |
@@ -55,11 +56,20 @@ Dify 读取该 OpenAPI 文件，以 `operationId` 生成工具定义，再把一
    http://host.docker.internal:8000/api/v1
    ```
 
-7. 保存后应看到 5 个工具。
+7. 保存后应看到 6 个工具。
 
 Dify 在 Docker 容器中运行，因此不能使用 `127.0.0.1:8000` 访问宿主机 FATHOM；必须使用 `host.docker.internal:8000`。
 
 ## 5. 在 Dify 中使用
+
+### Chatflow（推荐）
+
+1. 先按第 4 节注册 FATHOM 自定义工具。
+2. 在工作室选择“导入 DSL 文件”，选择 `integrations/dify/fathom-chatflow.yml`。
+3. 在工具节点选择 `ask_data`，在 LLM 节点选择当前工作区可用模型。
+4. 发布后直接对话，不需要选择工厂、产线或对象 ID。
+
+这个应用会把企业事实交给 FATHOM 校验和计算，把通用问题与自然表达交给 LLM。没有接入企业事实时不会产生假数，但定义、方法、帮助和普通对话仍可回答。
 
 ### Workflow
 
@@ -67,7 +77,7 @@ Dify 在 Docker 容器中运行，因此不能使用 `127.0.0.1:8000` 访问宿�
 2. 添加“工具”节点。
 3. 选择“FATHOM 工业问数 / ask_data”。
 4. 将用户输入映射到 `question`。
-5. 将返回的 `answer` 输出给用户，并把 `trace_id` 保留在运行日志中。普通问数不需要填写对象、范围或其他参数。
+5. 将 `ask_data.text` 输出给用户。需要 `trace_id` 与证据时改用 `ask_data_structured`。普通问数不需要填写对象、范围或其他参数。
 
 ### Agent
 

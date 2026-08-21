@@ -28,10 +28,10 @@ paths:
           content:
             application/json:
               schema: { type: object }
-  /query/ask:
+  /query/answer:
     post:
       operationId: ask_data
-      summary: 在 ONN 和 ABC 约束下查询、计算并返回证据
+      summary: 可信问数并直接返回适合聊天展示的答案文本
       requestBody:
         required: true
         content:
@@ -43,38 +43,30 @@ paths:
                 question: { type: string, description: 用户的业务问题 }
       responses:
         "200":
-          description: 包含答案、ABC 计划、数据、证据、建议追问和 trace_id
+          description: 可直接发送给用户的答案文本
+          content:
+            text/plain:
+              schema:
+                type: string
+  /query/ask:
+    post:
+      operationId: ask_data_structured
+      summary: 可信问数并返回计划、数据、证据和追踪信息
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string, description: 用户的业务问题 }
+      responses:
+        "200":
+          description: 结构化问数结果
           content:
             application/json:
-              schema:
-                type: object
-                required: [status, answer, data, evidence, trace_id, semantic_version, data_freshness]
-                properties:
-                  status:
-                    type: string
-                    enum: [completed, needs_clarification, no_data]
-                  answer: { type: string }
-                  data:
-                    type: object
-                    additionalProperties: true
-                  evidence:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        type: { type: string }
-                        title: { type: string }
-                        reference: { type: string }
-                        detail: { type: string }
-                  quality_warnings:
-                    type: array
-                    items: { type: string }
-                  suggested_followups:
-                    type: array
-                    items: { type: string }
-                  trace_id: { type: string }
-                  semantic_version: { type: string }
-                  data_freshness: { type: string, format: date-time }
+              schema: { type: object, additionalProperties: true }
   /knowledge/search:
     post:
       operationId: search_enterprise_knowledge

@@ -1,0 +1,62 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Microsoft YaHei, Inter, sans-serif", "primaryColor": "#F3EEFF", "primaryTextColor": "#21163A", "primaryBorderColor": "#7C5CFC", "lineColor": "#7457D8", "secondaryColor": "#E8FAF4", "tertiaryColor": "#F8F6FC", "clusterBkg": "#FBFAFE", "clusterBorder": "#D8CEF3"}, "flowchart": {"curve": "basis", "nodeSpacing": 32, "rankSpacing": 46}}}%%
+flowchart TB
+  subgraph access[用户与上层应用]
+    direction LR
+    web[🌊 FATHOM Web<br/>问数 · 建模 · 治理 · 工程]
+    dify[对话与智能体平台<br/>Chatflow / Agent]
+    apps[BI · 运营 · 分析应用<br/>REST / OpenAPI / MCP / A2A]
+  end
+
+  subgraph gateway[统一能力入口与受控智能体网络]
+    direction LR
+    api[FastAPI 能力网关<br/>问数 · 语义 · 知识 · Agent · 管理]
+    mesh[受控智能体网络<br/>问数 · 建模 · 诊断 · 治理]
+    trust[可信控制<br/>身份 · 对象范围 · 只读 · 审计 · 证据]
+    api --> mesh --> trust
+  end
+
+  subgraph harness[语义 Harness：ABC 编译与执行]
+    direction LR
+    acquire[Acquire 获取<br/>意图 · 对象 · 时间 · 权限 · 数据范围]
+    build[Build 构建<br/>本体约束计划 · 指标绑定 · 关系路径]
+    compute[Compute 计算<br/>SQL / DSL · 质量校验 · 确定性执行]
+    acquire --> build --> compute
+  end
+
+  subgraph onn[ONN 对象网络与语义层]
+    direction LR
+    objects[对象 · 关系 · 属性]
+    metrics[指标 · 维度 · 粒度 · 单位]
+    events[事件 · 规则 · 权限]
+    lifecycle[版本 · 评测 · 发布 · 回滚 · 演化候选]
+    objects --- metrics --- events --- lifecycle
+  end
+
+  subgraph foundation[连接、知识、工程与轻量运行时]
+    direction LR
+    connectors[数据连接器<br/>关系库 · 时序库 · API · 文件 · OT 协议]
+    knowledge[知识库<br/>内置文档 · 外接检索 · 来源引用]
+    engineering[工程工具<br/>管道 · SQL · Python · 导入导出 · 备份]
+    lite[Lite Runtime<br/>Python / Vue · SQLite · DuckDB · 可选 sqlite-vec]
+    connectors --- knowledge --- engineering --- lite
+  end
+
+  sources[(企业事实源<br/>IT · OT · 业务 · 数据 · 组织 · 空间)]
+
+  web --> api
+  dify --> api
+  apps --> api
+  trust --> acquire
+  build --> objects
+  lifecycle -.受控语义.-> compute
+  compute --> connectors
+  foundation --> sources
+
+  classDef primary fill:#6F4CF6,color:#FFFFFF,stroke:#9D87FF,stroke-width:2px;
+  classDef semantic fill:#F1ECFF,color:#21163A,stroke:#7C5CFC,stroke-width:1.5px;
+  classDef trustClass fill:#E8FAF4,color:#153D32,stroke:#3DBB92,stroke-width:1.5px;
+  classDef store fill:#FFF7E8,color:#4A3213,stroke:#E8A83E,stroke-width:1.5px;
+  class api,mesh,acquire,build,compute primary;
+  class objects,metrics,events,lifecycle semantic;
+  class trust,knowledge trustClass;
+  class sources,lite store;

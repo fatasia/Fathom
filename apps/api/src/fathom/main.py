@@ -68,8 +68,13 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
             relation for contract in contracts for relation in contract.relations
         ]
         app.state.knowledge_service = KnowledgeService(session_factory)
+        app.state.model_gateway_service = ModelGatewayService(session_factory)
+        app.state.model_gateway_service.seed_from_configuration(active_settings.model_gateway)
         app.state.query_service = QueryService(
-            session_factory, repository, app.state.knowledge_service
+            session_factory,
+            repository,
+            app.state.knowledge_service,
+            app.state.model_gateway_service,
         )
         app.state.evaluation_service = EvaluationService(session_factory, app.state.query_service)
         app.state.governance_service = GovernanceService(session_factory)
@@ -86,8 +91,6 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
             app.state.query_service,
             app.state.data_source_service,
         )
-        app.state.model_gateway_service = ModelGatewayService(session_factory)
-        app.state.model_gateway_service.seed_from_configuration(active_settings.model_gateway)
         app.state.audit_service = AuditService(session_factory)
         yield
 

@@ -1,0 +1,42 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Microsoft YaHei, Inter, sans-serif", "primaryColor": "#F3EEFF", "primaryTextColor": "#21163A", "primaryBorderColor": "#7C5CFC", "lineColor": "#7457D8", "secondaryColor": "#E8FAF4", "tertiaryColor": "#FFF7E8"}, "flowchart": {"curve": "basis", "nodeSpacing": 24, "rankSpacing": 38}}}%%
+flowchart TD
+  ask([用户直接提问<br/>无需选择对象或填写参数]) --> entry[对话入口接收上下文<br/>FATHOM Web / Chatflow / Agent]
+  entry --> classify{问题类型}
+
+  classify -- 企业数值或状态 --> acquire[Acquire<br/>识别对象、时间、权限与可用数据]
+  acquire --> anchor{对象与范围<br/>能否唯一锚定？}
+  anchor -- 否 --> clarify[用业务语言澄清<br/>给出可选范围，不暴露内部 ID]
+  clarify --> ask
+  anchor -- 是 --> build[Build<br/>绑定指标口径、关系路径与数据来源]
+  build --> validate{语义、权限、质量<br/>校验通过？}
+  validate -- 否 --> safe[安全失败<br/>说明缺少的数据或定义，不编造数值]
+  validate -- 是 --> compute[Compute<br/>生成只读计划并确定性执行]
+  compute --> evidence[组织答案、证据、数据新鲜度<br/>语义版本与 trace]
+
+  classify -- 定义、制度或方法 --> retrieve[检索语义层与知识库<br/>保留来源]
+  retrieve --> explain[大模型只负责理解与表达<br/>不重算指标]
+  classify -- 通用对话 --> general[大模型自然回答<br/>明确企业事实边界]
+
+  safe --> answer([自然语言回复])
+  evidence --> answer
+  explain --> answer
+  general --> answer
+
+  answer --> observe[记录反馈、失败原因、查询轨迹<br/>Schema 漂移与新术语]
+  observe --> candidate[生成语义或映射候选<br/>不静默修改生产语义]
+  candidate --> eval[黄金问题集 + 冲突检查<br/>权限、口径与回归评测]
+  eval --> pass{达到发布阈值？}
+  pass -- 否 --> improve[保留候选并继续学习]
+  improve --> candidate
+  pass -- 是 --> publish[直接发布新语义版本<br/>全量留痕且可回滚]
+  publish -.下一次提问使用.-> acquire
+  publish -.沉淀.-> retrieve
+
+  classDef primary fill:#6F4CF6,color:#FFFFFF,stroke:#9D87FF,stroke-width:2px;
+  classDef semantic fill:#F1ECFF,color:#21163A,stroke:#7C5CFC,stroke-width:1.5px;
+  classDef trust fill:#E8FAF4,color:#153D32,stroke:#3DBB92,stroke-width:1.5px;
+  classDef warn fill:#FFF7E8,color:#4A3213,stroke:#E8A83E,stroke-width:1.5px;
+  class ask,entry,answer primary;
+  class acquire,build,compute,retrieve,candidate,eval,publish semantic;
+  class validate,evidence,explain,observe,pass trust;
+  class clarify,safe,improve warn;

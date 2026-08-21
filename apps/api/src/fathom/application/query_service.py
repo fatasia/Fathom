@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from uuid import uuid4
 
 from fathom.adapters.storage.database import (
@@ -26,6 +27,15 @@ from fathom.domains.query.models import (
 from fathom.domains.semantics.models import AssetKind, SemanticAsset
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
+
+
+class TextModelGateway(Protocol):
+    def invoke_role(
+        self,
+        role: str,
+        prompt: str,
+        image_data_urls: list[str] | None = None,
+    ) -> dict[str, object]: ...
 
 
 class SemanticPlanner:
@@ -281,11 +291,13 @@ class QueryService:
         session_factory: sessionmaker[Session],
         semantic_repository: SqlSemanticRepository,
         knowledge_service: KnowledgeService | None = None,
+        model_gateway: TextModelGateway | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = semantic_repository
         self._planner = SemanticPlanner(session_factory, semantic_repository)
         self._knowledge_service = knowledge_service
+        self._model_gateway = model_gateway
 
     def plan(self, request: AskRequest) -> FathomPlan:
         """Build a validated plan without executing data access or writing a trace."""
@@ -296,9 +308,21 @@ class QueryService:
         request: AskRequest,
         authorized_objects: set[str] | None = None,
     ) -> AskResponse:
-        plan = self.plan(request)
         trace_id = f"tr_{uuid4().hex[:16]}"
         semantic_version = request.semantic_version or "manufacturing.execution@0.1.0"
+        conversational = self._answer_conversational(
+            request.question, trace_id, semantic_version, allow_general=False
+        )
+        if conversational is not None:
+            self._save_trace(
+                trace_id,
+                request.question,
+                conversational.plan,
+                conversational.status,
+            )
+            return conversational
+
+        plan = self.plan(request)
 
         if plan.status != PlanStatus.READY or plan.binding is None:
             knowledge_response = self._answer_from_knowledge(
@@ -312,6 +336,17 @@ class QueryService:
                     knowledge_response.status,
                 )
                 return knowledge_response
+            conversational = self._answer_conversational(
+                request.question, trace_id, semantic_version, allow_general=True
+            )
+            if conversational is not None:
+                self._save_trace(
+                    trace_id,
+                    request.question,
+                    conversational.plan,
+                    conversational.status,
+                )
+                return conversational
             no_data = bool(plan.clarification and plan.clarification.startswith("当前还没有"))
             response = AskResponse(
                 status="no_data" if no_data else plan.status.value,
@@ -479,6 +514,171 @@ class QueryService:
         )
         self._save_trace(trace_id, request.question, plan, response.status)
         return response
+
+    def _answer_conversational(
+        self,
+        question: str,
+        trace_id: str,
+        semantic_version: str,
+        *,
+        allow_general: bool,
+    ) -> AskResponse | None:
+        """Answer non-factual conversation before entering enterprise-data planning."""
+
+        normalized = re.sub(r"[\s，。！？!?、]+", "", question.casefold())
+        assets = self._repository.list_assets()
+        metrics = [asset for asset in assets if asset.kind == AssetKind.METRIC]
+        matched_metric = SemanticPlanner._match_metric(question.casefold(), metrics)
+        definition_terms = ("是什么", "什么是", "怎么计算", "如何计算", "定义", "口径", "公式")
+        greeting_terms = {
+            "你好",
+            "您好",
+            "嗨",
+            "哈喽",
+            "hello",
+            "hi",
+            "早上好",
+            "下午好",
+            "晚上好",
+        }
+        help_terms = ("你是谁", "你能做什么", "怎么使用", "如何使用", "使用帮助")
+        enterprise_signals = (
+            "多少",
+            "当前",
+            "昨天",
+            "今天",
+            "本周",
+            "本月",
+            "趋势",
+            "排名",
+            "异常",
+            "原因",
+            "下降",
+            "上升",
+            "预测",
+            "状态",
+            "产量",
+            "库存",
+            "订单",
+            "设备",
+            "产线",
+            "工厂",
+            "号线",
+            "停机",
+            "良率",
+            "达成率",
+        )
+
+        intent: str | None = None
+        if normalized in greeting_terms:
+            intent = "greeting"
+        elif any(term in normalized for term in help_terms):
+            intent = "help"
+        elif matched_metric is not None and any(term in question for term in definition_terms):
+            intent = "semantic_definition"
+        elif (
+            allow_general
+            and matched_metric is None
+            and not any(term in question for term in enterprise_signals)
+        ):
+            intent = "general_conversation"
+        if intent is None:
+            return None
+
+        evidence: list[Evidence] = []
+        if intent == "semantic_definition" and matched_metric is not None:
+            details = matched_metric.description or "已发布业务指标"
+            formula = (
+                f"；计算口径：{matched_metric.expression}"
+                if matched_metric.expression
+                else ""
+            )
+            unit = f"；单位：{matched_metric.unit}" if matched_metric.unit else ""
+            answer = f"{matched_metric.label}：{details}{formula}{unit}。"
+            evidence = [
+                Evidence(
+                    type="semantic_contract",
+                    title=f"{matched_metric.label} · 已发布定义",
+                    reference=f"semantic://{matched_metric.key}@0.1.0",
+                    detail=matched_metric.expression or matched_metric.description,
+                )
+            ]
+        elif intent == "greeting":
+            answer = (
+                "你好，我是 FATHOM 工业数据助手。你可以直接问企业指标、业务定义、"
+                "分析方法或平台使用问题，不需要先选择对象或填写技术参数。"
+            )
+        elif intent == "help":
+            answer = (
+                "我是 FATHOM 工业数据助手。我能基于已接入的数据回答指标与运行问题，"
+                "解释业务口径和知识文档，并给出可追溯证据；直接输入自然语言问题即可。"
+            )
+        else:
+            answer = self._invoke_general_model(question) or (
+                "我可以回答工业数据、指标定义、分析方法和平台使用问题。"
+                "涉及本企业的实时数值时，需要先接入真实数据源。"
+            )
+
+        plan = FathomPlan(
+            question=question,
+            status=PlanStatus.READY,
+            intent=intent,
+            anchors=(
+                [PlanAnchor(kind="metric", key=matched_metric.key, label=matched_metric.label)]
+                if matched_metric is not None
+                else []
+            ),
+            abc=[
+                AbcStage(
+                    code="A",
+                    name="Acquire",
+                    status="completed",
+                    summary="已识别为对话、帮助或语义定义问题",
+                ),
+                AbcStage(
+                    code="B",
+                    name="Build",
+                    status="completed",
+                    summary="已绑定可信回答边界，不进入企业事实计算",
+                ),
+                AbcStage(
+                    code="C",
+                    name="Compute",
+                    status="completed",
+                    summary="已生成自然语言回答",
+                ),
+            ],
+            validations=["未将通用回答冒充企业事实", "企业数值仍需真实数据与语义校验"],
+        )
+        return AskResponse(
+            status="completed",
+            answer=answer,
+            plan=plan,
+            data={"columns": [], "rows": []},
+            chart_spec={"type": "none"},
+            evidence=evidence,
+            quality_warnings=[],
+            suggested_followups=["查看已发布指标定义", "了解如何连接企业数据源"],
+            trace_id=trace_id,
+            semantic_version=semantic_version,
+            data_freshness=datetime.now(UTC).isoformat(),
+        )
+
+    def _invoke_general_model(self, question: str) -> str | None:
+        if self._model_gateway is None:
+            return None
+        prompt = (
+            "你是渊渟 FATHOM 的工业数据助手。请直接、自然、简洁地回答用户问题。"
+            "可以回答通用知识、方法和使用帮助；不得编造任何企业专属数值、状态或事实。"
+            "如果问题需要企业实时数据，应明确说明需要先接入并验证数据。\n\n"
+            f"用户问题：{question}"
+        )
+        try:
+            result = self._model_gateway.invoke_role("explainer", prompt)
+        except (OSError, ValueError):
+            return None
+        text = result.get("text")
+        return str(text).strip() if text else None
 
     def _answer_from_knowledge(
         self, question: str, trace_id: str, semantic_version: str

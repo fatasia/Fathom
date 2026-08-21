@@ -38,7 +38,7 @@ import {
   X,
   Zap,
 } from '@lucide/vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import {
   askData,
   createBackup,
@@ -117,6 +117,14 @@ import type {
 } from './types'
 
 type Workspace = 'ask' | 'ontology' | 'knowledge' | 'metrics' | 'agents' | 'connections' | 'studio' | 'governance' | 'settings'
+type ConversationTurn = {
+  id: string
+  question: string
+  result: AskResult | null
+  error: string
+  evidenceOpen: boolean
+  executionOpen: boolean
+}
 
 const workspace = ref<Workspace>('ask')
 const question = ref('')
@@ -174,7 +182,8 @@ const draftMetric = ref({
 })
 const modelPanelOpen = ref(false)
 const modelMessage = ref('')
-const conversationHistory = ref<Array<{ question: string; answer: string; traceId: string }>>([])
+const conversationHistory = ref<ConversationTurn[]>([])
+const conversationEnd = ref<HTMLElement | null>(null)
 const objectInstances = ref<ObjectInstance[]>([])
 const visionAnalysis = ref<{
   analysis: string
@@ -288,12 +297,13 @@ const filteredAssets = computed(() => {
   })
 })
 
-const currentMetricLabel = computed(
-  () => result.value?.plan.anchors.find((anchor) => anchor.kind === 'metric')?.label ?? '订单达成率',
-)
-const currentObjectLabel = computed(
-  () => result.value?.plan.anchors.find((anchor) => anchor.kind === 'object')?.label ?? '业务对象',
-)
+function metricLabelOf(answer: AskResult) {
+  return answer.plan.anchors.find((anchor) => anchor.kind === 'metric')?.label ?? '业务指标'
+}
+
+function objectLabelOf(answer: AskResult) {
+  return answer.plan.anchors.find((anchor) => anchor.kind === 'object')?.label ?? '业务对象'
+}
 
 const modelStatusLabels: Record<string, string> = {
   untested: '待探测',
@@ -649,23 +659,29 @@ async function publishChange(change: SemanticChange) {
 async function submitQuestion(nextQuestion?: string) {
   const content = nextQuestion ?? question.value
   if (!content.trim() || isLoading.value) return
-  question.value = content
+  const turn: ConversationTurn = {
+    id: `${Date.now()}-${conversationHistory.value.length}`,
+    question: content.trim(),
+    result: null,
+    error: '',
+    evidenceOpen: false,
+    executionOpen: false,
+  }
+  conversationHistory.value.push(turn)
+  question.value = ''
   isLoading.value = true
   error.value = ''
-  result.value = null
-  evidenceOpen.value = false
-  executionOpen.value = false
+  await nextTick()
+  conversationEnd.value?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   try {
     result.value = await askData(content)
-    conversationHistory.value.push({
-      question: content,
-      answer: result.value.answer,
-      traceId: result.value.trace_id,
-    })
+    turn.result = result.value
   } catch (requestError) {
-    error.value = requestError instanceof Error ? requestError.message : '分析失败，请稍后重试。'
+    turn.error = requestError instanceof Error ? requestError.message : '分析失败，请稍后重试。'
   } finally {
     isLoading.value = false
+    await nextTick()
+    conversationEnd.value?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }
 }
 
@@ -1120,72 +1136,82 @@ onMounted(async () => {
 
       <section v-if="workspace === 'ask'" class="workspace ask-workspace">
         <div class="ask-hero">
-          <div><span class="eyebrow">可信问数</span><h1>问一句，直接看到数据</h1><p>用日常业务语言提问。对象、指标和权限由系统自动处理。</p></div>
-          <button v-if="conversationHistory.length" class="quiet-action" @click="resetConversation"><X :size="15" />清空</button>
+          <div><span class="eyebrow">FATHOM CONVERSATION</span><h1>问数</h1><p>直接对话。系统自动理解对象、指标和时间，并给出可信证据。</p></div>
+          <button v-if="conversationHistory.length" class="quiet-action" @click="resetConversation"><Plus :size="15" />新对话</button>
         </div>
 
-        <div class="ask-layout">
-          <div class="answer-stream">
-            <form class="question-box question-box--simple" @submit.prevent="submitQuestion()">
-              <div class="question-icon"><Sparkles :size="21" /></div>
-              <textarea v-model="question" aria-label="输入要查询的业务问题" placeholder="例如：为什么一号线昨天订单达成率下降？" rows="2" @keydown.enter="submitOnEnter"></textarea>
-              <div class="question-footer">
-                <div class="question-options">
-                  <span class="auto-understanding"><Sparkles :size="13" />自动理解指标、对象和时间</span>
-                  <label class="vision-upload" title="上传现场图片辅助分析"><input type="file" accept="image/jpeg,image/png,image/webp" @change="handleVisionUpload" /><UploadCloud :size="14" />{{ visionLoading ? '识别中…' : '附图' }}</label>
-                </div>
-                <button class="send-button send-button--labeled" type="submit" :disabled="isLoading || !question.trim()">{{ isLoading ? '查询中' : '查询' }}<Send :size="16" /></button>
-              </div>
-            </form>
-
-            <div v-if="!result && !isLoading && !error" class="quick-questions">
-              <span>可以这样问</span>
+        <div class="chat-shell">
+          <div v-if="!conversationHistory.length" class="chat-welcome">
+            <div class="assistant-avatar"><Waves :size="24" /></div>
+            <h2>你好，我是 FATHOM</h2>
+            <p>可以问企业数据、指标定义、分析方法或平台使用问题。无需选择范围，也不用填写内部 ID。</p>
+            <div class="quick-questions">
+              <button @click="submitQuestion('OEE 是什么，应该怎样计算？')">OEE 是什么，应该怎样计算？</button>
               <button @click="submitQuestion('昨天的 OEE 是多少？')">昨天的 OEE 是多少？</button>
-              <button @click="submitQuestion('哪些设备停机影响最大？')">哪些设备停机影响最大？</button>
-              <button @click="submitQuestion('本月订单达成率有什么变化？')">本月订单达成率有什么变化？</button>
+              <button @click="submitQuestion('如何把生产数据接入 FATHOM？')">如何把生产数据接入 FATHOM？</button>
             </div>
-
-            <article v-if="visionAnalysis" class="vision-result"><div><UploadCloud :size="17" /><strong>图片识别结果</strong><span>{{ visionAnalysis.object_id }}</span></div><p>{{ visionAnalysis.analysis }}</p><small>{{ visionAnalysis.note }}</small></article>
-            <div v-if="isLoading" class="analysis-card loading-card"><div class="dive-loader"><span></span><span></span><span></span></div><div><strong>正在查询并校验</strong><p>识别业务对象、统一指标口径并核对权限</p></div></div>
-            <div v-else-if="error" class="error-card">{{ error }}</div>
-
-            <article v-else-if="result" class="analysis-card result-card">
-              <div class="result-meta">
-                <span v-if="result.status === 'completed'" class="verified-badge"><ShieldCheck :size="14" />结果已校验</span>
-                <span v-else-if="result.status === 'no_data'" class="clarify-badge"><Database :size="13" />暂无真实数据</span>
-                <span v-else class="clarify-badge"><CircleDot :size="13" />需要自然语言确认</span>
-                <span>{{ result.semantic_version }}</span>
-              </div>
-              <h2>{{ result.answer }}</h2>
-
-              <div v-if="result.data.current !== undefined" class="metric-stage">
-                <div class="metric-primary"><span>{{ currentMetricLabel }}</span><strong>{{ result.data.current }}<small>{{ result.data.unit }}</small></strong><em :class="{ positive: (result.data.delta ?? 0) >= 0 }">{{ (result.data.delta ?? 0) >= 0 ? '+' : '' }}{{ result.data.delta }}{{ result.data.unit }} 较前日</em></div>
-                <div class="comparison-visual"><div v-for="row in result.data.rows" :key="row.period" class="period-column"><span>{{ row.value }}{{ result.data.unit }}</span><div class="column-track"><i :style="{ height: `${Math.max(22, row.value)}%` }"></i></div><small>{{ row.period.slice(5) }}</small></div></div>
-              </div>
-
-              <div v-if="result.data.contributors?.length" class="contributors">
-                <div class="section-label"><Zap :size="15" />主要影响</div>
-                <div class="contributor-list"><div v-for="(item, index) in result.data.contributors" :key="item.object" class="contributor-row"><span class="rank">0{{ index + 1 }}</span><div><strong>{{ item.label }}</strong><small>{{ item.object }}</small></div><div class="impact-line"><i :style="{ width: `${Math.min(item.minutes * 1.8, 100)}%` }"></i></div><b>{{ item.minutes }} min</b></div></div>
-              </div>
-
-              <div class="result-actions">
-                <button v-if="result.evidence.length" @click="evidenceOpen = !evidenceOpen"><BookOpen :size="14" />{{ evidenceOpen ? '收起证据' : `查看证据（${result.evidence.length}）` }}</button>
-                <button @click="executionOpen = !executionOpen"><GitBranch :size="14" />{{ executionOpen ? '收起过程' : '查看计算过程' }}</button>
-                <code>{{ result.trace_id }}</code>
-              </div>
-
-              <div v-if="executionOpen" class="plan-strip"><div v-for="stage in result.plan.abc" :key="stage.code"><b>{{ stage.code }}</b><span>{{ stage.name }} · {{ stage.summary }}</span></div></div>
-
-              <aside v-if="evidenceOpen" class="evidence-panel evidence-panel--inline">
-                <div class="panel-title"><div><BookOpen :size="17" /><strong>答案证据</strong></div><span>{{ result.evidence.length }} 项</span></div>
-                <div class="semantic-path"><span>查询路径</span><div class="path-flow"><b>{{ currentObjectLabel }}</b><ChevronRight :size="13" /><b>{{ currentMetricLabel }}</b></div></div>
-                <div class="evidence-list"><article v-for="item in result.evidence" :key="item.reference"><div class="evidence-type"><FileCode2 v-if="item.type === 'semantic_contract'" :size="15" /><Database v-else :size="15" />{{ item.type }}</div><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><code>{{ item.reference }}</code></article></div>
-                <div class="freshness"><span class="pulse-dot"></span><div><strong>数据更新时间</strong><span>{{ result.data_freshness }}</span></div></div>
-              </aside>
-
-              <div class="followups"><span>继续追问</span><button v-for="followup in result.suggested_followups" :key="followup" @click="submitQuestion(followup)">{{ followup }}<ArrowRight :size="14" /></button></div>
-            </article>
           </div>
+
+          <div class="conversation-stream" aria-live="polite">
+            <section v-for="turn in conversationHistory" :key="turn.id" class="conversation-turn">
+              <div class="user-message"><div class="message-avatar">R</div><p>{{ turn.question }}</p></div>
+              <div class="assistant-message">
+                <div class="assistant-avatar"><Waves :size="17" /></div>
+                <div v-if="!turn.result && !turn.error" class="assistant-body assistant-thinking"><div class="dive-loader"><span></span><span></span><span></span></div><div><strong>正在理解并校验</strong><p>识别意图、业务语义和可用证据</p></div></div>
+                <div v-else-if="turn.error" class="assistant-body error-card">{{ turn.error }}</div>
+                <article v-else-if="turn.result" class="assistant-body result-card">
+                  <div class="result-meta">
+                    <span v-if="turn.result.status === 'completed'" class="verified-badge"><ShieldCheck :size="14" />可信回答</span>
+                    <span v-else-if="turn.result.status === 'no_data'" class="clarify-badge"><Database :size="13" />暂无真实数据</span>
+                    <span v-else class="clarify-badge"><CircleDot :size="13" />需要自然语言确认</span>
+                    <span>{{ turn.result.semantic_version }}</span>
+                  </div>
+                  <h2>{{ turn.result.answer }}</h2>
+
+                  <div v-if="turn.result.data.current !== undefined" class="metric-stage">
+                    <div class="metric-primary"><span>{{ metricLabelOf(turn.result) }}</span><strong>{{ turn.result.data.current }}<small>{{ turn.result.data.unit }}</small></strong><em :class="{ positive: (turn.result.data.delta ?? 0) >= 0 }">{{ (turn.result.data.delta ?? 0) >= 0 ? '+' : '' }}{{ turn.result.data.delta }}{{ turn.result.data.unit }} 较前日</em></div>
+                    <div class="comparison-visual"><div v-for="row in turn.result.data.rows" :key="row.period" class="period-column"><span>{{ row.value }}{{ turn.result.data.unit }}</span><div class="column-track"><i :style="{ height: `${Math.max(22, row.value)}%` }"></i></div><small>{{ row.period.slice(5) }}</small></div></div>
+                  </div>
+
+                  <div v-if="turn.result.data.contributors?.length" class="contributors">
+                    <div class="section-label"><Zap :size="15" />主要影响</div>
+                    <div class="contributor-list"><div v-for="(item, index) in turn.result.data.contributors" :key="item.object" class="contributor-row"><span class="rank">0{{ index + 1 }}</span><div><strong>{{ item.label }}</strong><small>{{ item.object }}</small></div><div class="impact-line"><i :style="{ width: `${Math.min(item.minutes * 1.8, 100)}%` }"></i></div><b>{{ item.minutes }} min</b></div></div>
+                  </div>
+
+                  <div class="result-actions">
+                    <button v-if="turn.result.evidence.length" @click="turn.evidenceOpen = !turn.evidenceOpen"><BookOpen :size="14" />{{ turn.evidenceOpen ? '收起证据' : `证据（${turn.result.evidence.length}）` }}</button>
+                    <button @click="turn.executionOpen = !turn.executionOpen"><GitBranch :size="14" />{{ turn.executionOpen ? '收起过程' : '计算过程' }}</button>
+                    <code>{{ turn.result.trace_id }}</code>
+                  </div>
+
+                  <div v-if="turn.executionOpen" class="plan-strip"><div v-for="stage in turn.result.plan.abc" :key="stage.code"><b>{{ stage.code }}</b><span>{{ stage.name }} · {{ stage.summary }}</span></div></div>
+
+                  <aside v-if="turn.evidenceOpen" class="evidence-panel evidence-panel--inline">
+                    <div class="panel-title"><div><BookOpen :size="17" /><strong>答案证据</strong></div><span>{{ turn.result.evidence.length }} 项</span></div>
+                    <div class="semantic-path"><span>查询路径</span><div class="path-flow"><b>{{ objectLabelOf(turn.result) }}</b><ChevronRight :size="13" /><b>{{ metricLabelOf(turn.result) }}</b></div></div>
+                    <div class="evidence-list"><article v-for="item in turn.result.evidence" :key="item.reference"><div class="evidence-type"><FileCode2 v-if="item.type === 'semantic_contract'" :size="15" /><Database v-else :size="15" />{{ item.type }}</div><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><code>{{ item.reference }}</code></article></div>
+                    <div class="freshness"><span class="pulse-dot"></span><div><strong>数据更新时间</strong><span>{{ turn.result.data_freshness }}</span></div></div>
+                  </aside>
+
+                  <div class="followups"><button v-for="followup in turn.result.suggested_followups" :key="followup" @click="submitQuestion(followup)">{{ followup }}<ArrowRight :size="14" /></button></div>
+                </article>
+              </div>
+            </section>
+            <article v-if="visionAnalysis" class="vision-result"><div><UploadCloud :size="17" /><strong>图片识别结果</strong><span>{{ visionAnalysis.object_id }}</span></div><p>{{ visionAnalysis.analysis }}</p><small>{{ visionAnalysis.note }}</small></article>
+            <div ref="conversationEnd" class="conversation-end"></div>
+          </div>
+
+          <form class="question-box chat-composer" @submit.prevent="submitQuestion()">
+            <textarea v-model="question" aria-label="输入要查询的业务问题" placeholder="给 FATHOM 发消息…" rows="1" @keydown.enter="submitOnEnter"></textarea>
+            <div class="question-footer">
+              <div class="question-options">
+                <span class="auto-understanding"><Sparkles :size="13" />自动理解范围</span>
+                <label class="vision-upload" title="上传现场图片辅助分析"><input type="file" accept="image/jpeg,image/png,image/webp" @change="handleVisionUpload" /><UploadCloud :size="14" />{{ visionLoading ? '识别中…' : '附图' }}</label>
+              </div>
+              <button class="send-button" type="submit" :disabled="isLoading || !question.trim()" aria-label="发送"><Send :size="16" /></button>
+            </div>
+          </form>
+          <p class="chat-disclaimer">企业数值只采用真实数据和已发布口径；通用回答可能由模型生成，请结合业务语境判断。</p>
         </div>
       </section>
 

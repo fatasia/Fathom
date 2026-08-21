@@ -65,6 +65,27 @@ def test_unknown_metric_stops_before_execution(tmp_path: Path) -> None:
     assert result["plan"]["binding"] is None
 
 
+def test_greeting_uses_conversation_route_without_enterprise_data(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post("/api/v1/query/ask", json={"question": "你好"})
+    result = response.json()
+    assert response.status_code == 200
+    assert result["status"] == "completed"
+    assert result["plan"]["intent"] == "greeting"
+    assert "FATHOM" in result["answer"]
+    assert result["chart_spec"]["type"] == "none"
+
+
+def test_metric_definition_does_not_require_object_selection(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post("/api/v1/query/ask", json={"question": "OEE 是什么？"})
+    result = response.json()
+    assert response.status_code == 200
+    assert result["status"] == "completed"
+    assert result["plan"]["intent"] == "semantic_definition"
+    assert result["evidence"][0]["type"] == "semantic_contract"
+
+
 def test_abc_uses_uino_acquire_build_compute(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post(
@@ -255,6 +276,19 @@ def test_dify_tool_schema_is_downloadable(tmp_path: Path) -> None:
     assert "openapi: 3.0.3" in response.text
     assert "ask_data" in response.text
     assert "search_enterprise_knowledge" in response.text
+
+
+def test_plain_text_answer_is_ready_for_chat_tools(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/api/v1/query/answer",
+            json={"question": "为什么一号线昨天订单达成率下降？"},
+        )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.headers["x-fathom-status"] == "completed"
+    assert "{" not in response.text
+    assert "一号生产线" in response.text
 
 
 def test_dbt_semantic_layer_import_creates_onn_candidate(tmp_path: Path) -> None:
