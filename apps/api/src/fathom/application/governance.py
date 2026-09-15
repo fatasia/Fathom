@@ -49,8 +49,9 @@ class GovernanceService:
         "rollback": ({"published"}, "rolled_back"),
     }
 
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], *, suite_key: str) -> None:
         self._session_factory = session_factory
+        self._suite_key = suite_key
 
     def seed(self) -> None:
         now = datetime.now(UTC)
@@ -72,7 +73,7 @@ class GovernanceService:
             {
                 "change_id": "chg_oee_description",
                 "kind": "definition",
-                "title": "补充 OEE 的工业计算边界说明",
+                "title": "补充 OEE 的计算边界说明",
                 "description": "明确计划停机、换型和质量损失的处理边界。",
                 "confidence": 0.93,
                 "impact": {"assets": 1, "risk": "medium"},
@@ -87,7 +88,7 @@ class GovernanceService:
                 "change_id": "chg_downtime_alias",
                 "kind": "alias",
                 "title": "将“停线时长”纳入停机时长词典",
-                "description": "来自车间班组的稳定用语，未发现指标冲突。",
+                "description": "来自业务团队的稳定用语，未发现指标冲突。",
                 "confidence": 0.91,
                 "impact": {"assets": 1, "risk": "low"},
                 "evidence": ["queries:19", "users:8", "conflicts:0"],
@@ -171,6 +172,85 @@ class GovernanceService:
             session.refresh(record)
             return self._serialize(record)
 
+    def propose_extracted_assets(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        actor: str,
+        batch_id: str,
+    ) -> dict[str, Any]:
+        """Persist machine-extracted assets as review-only governance changes.
+
+        Extraction is deliberately idempotent: published assets and active candidates are
+        reported as conflicts/skips instead of being silently overwritten.
+        """
+
+        created: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        conflicts: list[dict[str, str]] = []
+        for candidate in candidates:
+            try:
+                proposal = SemanticAssetProposal.model_validate(candidate["proposal"])
+            except (KeyError, ValueError) as error:
+                skipped.append({"key": str(candidate.get("key", "unknown")), "reason": str(error)})
+                continue
+            with self._session_factory() as session:
+                existing = session.get(SemanticAssetRecord, proposal.key)
+                if existing is not None:
+                    conflicts.append(
+                        {
+                            "key": proposal.key,
+                            "reason": "published_asset_exists",
+                            "existing_label": existing.label,
+                        }
+                    )
+                    continue
+                duplicate = session.scalar(
+                    select(SemanticChangeRecord).where(
+                        SemanticChangeRecord.status.in_(["candidate", "in_review", "approved"]),
+                        SemanticChangeRecord.patch["definition"]["key"].as_string()
+                        == proposal.key,
+                    )
+                )
+                if duplicate is not None:
+                    skipped.append({"key": proposal.key, "reason": "active_candidate_exists"})
+                    continue
+                asset = SemanticAsset.model_validate(proposal.model_dump())
+                now = datetime.now(UTC)
+                confidence = min(max(float(candidate.get("confidence", 0.7)), 0.0), 1.0)
+                evidence = [str(item) for item in candidate.get("evidence", [])]
+                record = SemanticChangeRecord(
+                    change_id=f"chg_{uuid4().hex[:16]}",
+                    created_at=now,
+                    updated_at=now,
+                    kind=asset.kind.value,
+                    title=f"新增{asset.kind.value}：{asset.label}",
+                    description=asset.description or "由数据源或知识文档自动提炼的语义候选。",
+                    confidence=confidence,
+                    impact={
+                        "assets": 1,
+                        "risk": "medium" if asset.kind == AssetKind.METRIC else "low",
+                        "new_asset": True,
+                        "batch_id": batch_id,
+                    },
+                    evidence=[*evidence, f"extraction_batch:{batch_id}"],
+                    patch={"operation": "add_asset", "definition": asset.model_dump(mode="json")},
+                    status="candidate",
+                    history=[
+                        {
+                            "action": "proposed",
+                            "actor": actor,
+                            "at": now.isoformat(),
+                            "comment": "自动提炼为候选，等待人工审核；未写入生产语义",
+                        }
+                    ],
+                )
+                session.add(record)
+                session.commit()
+                session.refresh(record)
+                created.append(self._serialize(record))
+        return {"created": created, "skipped": skipped, "conflicts": conflicts}
+
     def get(self, change_id: str) -> dict[str, Any] | None:
         with self._session_factory() as session:
             item = session.get(SemanticChangeRecord, change_id)
@@ -191,6 +271,7 @@ class GovernanceService:
             if decision.action in {"approve", "publish"}:
                 evaluation = session.scalar(
                     select(EvaluationRunRecord)
+                    .where(EvaluationRunRecord.suite_key == self._suite_key)
                     .order_by(EvaluationRunRecord.created_at.desc())
                     .limit(1)
                 )

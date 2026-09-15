@@ -82,7 +82,7 @@ CONNECTOR_TYPES = [
     },
     {
         "key": "historian",
-        "label": "Industrial Historian",
+        "label": "Historian",
         "category": "ot",
         "bundled": False,
         "driver": None,
@@ -159,6 +159,22 @@ class DataSourceService:
                 select(DataSourceRecord).order_by(DataSourceRecord.name)
             ).all()
             return [self._serialize(record) for record in records]
+
+    def get_record(self, key: str) -> DataSourceRecord:
+        """Return a detached source record for runtime adapters."""
+        with self._session_factory() as session:
+            record = session.get(DataSourceRecord, key)
+            if record is None:
+                raise LookupError(key)
+            session.expunge(record)
+            return record
+
+    def sqlalchemy_url(self, key: str):
+        """Resolve a relational source URL without exposing its secret in API output."""
+        record = self.get_record(key)
+        if record.connector_type not in {"postgresql", "mysql", "sqlserver", "oracle"}:
+            raise ValueError(f"数据源 {key} 不是 SQLAlchemy 关系库连接器")
+        return self._sqlalchemy_url(record)
 
     def save(self, payload: DataSourceInput) -> dict[str, Any]:
         if payload.connector_type not in {item["key"] for item in CONNECTOR_TYPES}:
@@ -284,6 +300,12 @@ class DataSourceService:
 
     def scaffold(self, key: str) -> dict[str, Any]:
         discovered = self.discover(key)
+        return self.scaffold_from_discovery(key, discovered)
+
+    def scaffold_from_discovery(
+        self, key: str, discovered: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build review candidates from an already captured schema snapshot."""
         objects = []
         attributes = []
         relations = []

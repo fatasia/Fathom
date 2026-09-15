@@ -1,0 +1,94 @@
+flowchart TD
+  subgraph access[体验与能力入口]
+    direction LR
+    web[Web 工作台]
+    bi[BI / 应用 API]
+    agents[Agent / Dify]
+    mcp[MCP / A2A]
+  end
+
+  gateway[Semantic Gateway<br/>身份 · 限流 · 协议适配]
+
+  subgraph runtime[运行平面：确定性可信执行]
+    direction LR
+    intent[MQL / 能力调用]
+    pep[策略执行点]
+    logical[逻辑计划]
+    router[多源路由]
+    physical[物理计划<br/>参数化只读 SQL]
+    executor[连接器执行<br/>超时 · 行数 · 只读事务]
+    quality[质量校验]
+    receipt[执行收据<br/>版本 · 血缘 · 结果哈希]
+    intent --> pep --> logical --> router --> physical --> executor --> quality --> receipt
+  end
+
+  subgraph control[控制平面：设计、发布与反馈]
+    direction LR
+    requirements[需求证据<br/>术语 · 规则 · 验收问题]
+    semantics[语义资产<br/>对象 · 指标 · 事件 · 策略]
+    mappings[映射注册表<br/>版本 · 兼容 · 回滚]
+    contracts[质量契约]
+    capabilities[能力目录<br/>语义 I/O · 最小权限]
+    lineage[血缘与影响分析]
+    golden[黄金问题门禁]
+    explorer[候选生成<br/>需求探索 · 反向映射]
+    requirements --> semantics --> mappings
+    semantics --> capabilities
+    requirements --> lineage
+    semantics --> lineage
+    mappings --> lineage
+    explorer -. 评审候选 .-> requirements
+    explorer -. 评审候选 .-> mappings
+  end
+
+  subgraph data[数据平面]
+    direction LR
+    pg[(PostgreSQL<br/>真实企业事实)]
+    sqlite[(SQLite<br/>第二来源 / Lite)]
+    internal[(FATHOM State<br/>映射 · 收据 · 血缘 · 审计)]
+    discovered[(REST / MySQL / OT<br/>按需增加执行适配)]
+  end
+
+  subgraph intelligence[受约束智能与行动]
+    direction LR
+    llm[LLM / 模型网关<br/>意图 · 解释 · 建议]
+    action[审批式 Action<br/>幂等维护 Case]
+  end
+
+  web --> gateway
+  bi --> gateway
+  agents --> gateway
+  mcp --> gateway
+  gateway --> intent
+
+  mappings --> router
+  contracts --> quality
+  capabilities --> intent
+  golden --> intent
+  receipt --> lineage
+
+  executor --> pg
+  executor --> sqlite
+  discovered -. 连接器扩展 .-> executor
+  mappings --> internal
+  receipt --> internal
+  lineage --> internal
+
+  llm -. 受约束规划 .-> intent
+  receipt -. 证据解释 .-> llm
+  pep --> action --> receipt
+
+  quality -. 漂移反馈 .-> mappings
+  golden -. 回归失败 .-> mappings
+
+  classDef primary fill:#6F4CF6,color:#fff,stroke:#9D87FF,stroke-width:2px;
+  classDef runtimeClass fill:#F1ECFF,color:#21163A,stroke:#7C5CFC,stroke-width:1.5px;
+  classDef controlClass fill:#E8FAF4,color:#153D32,stroke:#3DBB92,stroke-width:1.5px;
+  classDef storeClass fill:#FFF7E8,color:#4A3213,stroke:#E8A83E,stroke-width:1.5px;
+  classDef aiClass fill:#FCEEF6,color:#5B2444,stroke:#D66BA0,stroke-width:1.5px;
+  class gateway primary;
+  class intent,pep,logical,router,physical,executor,quality,receipt runtimeClass;
+  class requirements,semantics,mappings,contracts,capabilities,lineage,golden,explorer controlClass;
+  class pg,sqlite,internal,discovered storeClass;
+  class llm,action aiClass;
+

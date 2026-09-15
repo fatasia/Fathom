@@ -1086,10 +1086,13 @@ def test_mcp_exposes_and_calls_certified_tools(tmp_path: Path) -> None:
             },
         )
     assert initialized.json()["result"]["protocolVersion"] == "2025-11-25"
-    assert {tool["name"] for tool in tools.json()["result"]["tools"]} == {
+    assert {tool["name"] for tool in tools.json()["result"]["tools"]} >= {
         "fathom.ask_data",
         "fathom.get_object_context",
         "fathom.search_semantics",
+    }
+    assert "fathom.runtime.semantic.query" in {
+        tool["name"] for tool in tools.json()["result"]["tools"]
     }
     structured = called.json()["result"]["structuredContent"]
     assert structured["status"] == "completed"

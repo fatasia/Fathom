@@ -65,6 +65,12 @@ export interface AskResult {
     abc: Array<{ code: string; name: string; status: string; summary: string }>
     validations: string[]
     clarification?: string
+    mql?: {
+      metric: string
+      object_ids: string[]
+      dimensions: string[]
+      time_range: string
+    }
   }
   data: {
     current?: number
@@ -72,6 +78,12 @@ export interface AskResult {
     delta?: number
     unit?: string
     contributors?: Array<{ label: string; minutes: number; object: string }>
+    diagnosis?: {
+      analysis_run_id: string
+      conclusion_level: 'driver' | 'suspected_cause' | 'verified_root_cause'
+      summary: string
+    }
+    compiled_query?: { template: string; sql: string; parameters: Record<string, unknown> }
     rows: Array<{ period: string; value: number }>
   }
   evidence: Array<{ type: string; title: string; reference: string; detail: string }>
@@ -79,6 +91,19 @@ export interface AskResult {
   trace_id: string
   semantic_version: string
   data_freshness: string
+  verification_status: string
+  turn_id?: string
+  analysis_run_id?: string
+}
+
+export interface FeedbackResult {
+  feedback_id: string
+  source: 'self_ui' | 'implicit_text' | 'external'
+  rating: 'like' | 'dislike'
+  category: string
+  sentiment: string
+  emotion: string
+  status: string
 }
 
 export interface ConversationSummary {
@@ -371,4 +396,120 @@ export interface SemanticChange {
     evaluation_run_id?: string
   }>
   rollback_available: boolean
+}
+
+export interface RuntimeMapping {
+  mapping_id: string
+  key: string
+  metric_key: string
+  source_key: string
+  version: number
+  status: 'draft' | 'published' | 'retired'
+  owner: string
+  checksum: string
+  compatibility: {
+    compatible?: boolean
+    missing_columns?: string[]
+    checked_at?: string
+  }
+  definition: Record<string, unknown>
+  updated_at: string
+}
+
+export interface RuntimeReceipt {
+  receipt_id: string
+  trace_id: string
+  status: string
+  resource: string
+  mapping_id?: string
+  policy_decision_id: string
+  source_key?: string
+  row_count: number
+  duration_ms: number
+  result_hash?: string
+  data_freshness?: string
+  quality_report: Record<string, unknown>
+  error?: string
+  completed_at: string
+}
+
+export interface RuntimeCapability {
+  key: string
+  version: number
+  label: string
+  operation: string
+  minimum_role: string
+  side_effect: 'none' | 'internal' | 'external'
+  approval_required: boolean
+  published: boolean
+  definition: Record<string, unknown>
+}
+
+export interface RuntimeRequirement {
+  evidence_id: string
+  key: string
+  title: string
+  source_uri: string
+  owner: string
+  definition: {
+    statements?: string[]
+    acceptance_questions?: string[]
+    linked_assets?: string[]
+    citations?: Array<{ source_uri: string; excerpt: string; line: number }>
+    clarification_questions?: string[]
+    conflicts?: Array<{ kind: string; existing_requirement_key: string; detail: string }>
+    review_status?: 'candidate' | 'in_review' | 'approved' | 'rejected'
+  }
+  updated_at: string
+}
+
+export interface RuntimeObjectIdentity {
+  identity_id: string
+  canonical_object_id: string
+  source_key: string
+  external_object_id: string
+  owner: string
+  metadata: Record<string, unknown>
+  updated_at: string
+}
+
+export interface RuntimeAction {
+  run_id: string
+  capability_key: string
+  idempotency_key: string
+  object_id: string
+  title: string
+  status: string
+  principal: string
+  payload: Record<string, unknown>
+  result: Record<string, unknown>
+  created_at: string
+}
+
+export interface RuntimeGoldenCase {
+  key: string
+  question: string
+  expected_value: number
+  tolerance: number
+  enabled: boolean
+}
+
+export interface RuntimeEvaluation {
+  run_id: string
+  suite_key: string
+  total: number
+  passed_count: number
+  accuracy: number
+  passed: boolean
+  results: Array<Record<string, unknown>>
+}
+
+export interface RuntimeControlPlane {
+  mappings: RuntimeMapping[]
+  receipts: RuntimeReceipt[]
+  capabilities: RuntimeCapability[]
+  requirements: RuntimeRequirement[]
+  identities: RuntimeObjectIdentity[]
+  actions: RuntimeAction[]
+  goldenCases: RuntimeGoldenCase[]
 }

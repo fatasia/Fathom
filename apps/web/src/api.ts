@@ -10,6 +10,7 @@ import type {
   DifyIntegrationStatus,
   EffectiveConfiguration,
   EvaluationReport,
+  FeedbackResult,
   GoldenQuestionSet,
   KnowledgeBase,
   KnowledgeDocument,
@@ -22,6 +23,8 @@ import type {
   PythonExtension,
   PythonExtensionRun,
   QueryAttachment,
+  RuntimeControlPlane,
+  RuntimeEvaluation,
   SemanticOverview,
   SemanticChange,
   SqlPreview,
@@ -136,6 +139,21 @@ export function createConversation(title = '新对话'): Promise<ConversationSum
     method: 'POST',
     body: JSON.stringify({ title }),
   })
+}
+
+export function submitTurnFeedback(
+  conversationId: string,
+  turnId: string,
+  rating: 'like' | 'dislike',
+  content = '',
+): Promise<FeedbackResult> {
+  return request(
+    `/api/v1/query/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/feedback`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ rating, content }),
+    },
+  )
 }
 
 export function fetchConversation(conversationId: string): Promise<ConversationDetail> {
@@ -507,4 +525,29 @@ export function runPythonExtension(
 export async function fetchPythonExtensionRuns(key?: string): Promise<PythonExtensionRun[]> {
   const query = key ? `?extension_key=${encodeURIComponent(key)}` : ''
   return (await request<{ items: PythonExtensionRun[] }>(`/api/v1/python-extension-runs${query}`)).items
+}
+
+export async function fetchRuntimeControlPlane(): Promise<RuntimeControlPlane> {
+  const [mappings, receipts, capabilities, requirements, identities, actions, goldenCases] = await Promise.all([
+    request<{ items: RuntimeControlPlane['mappings'] }>('/api/v1/runtime/mappings'),
+    request<{ items: RuntimeControlPlane['receipts'] }>('/api/v1/runtime/receipts?limit=30'),
+    request<{ items: RuntimeControlPlane['capabilities'] }>('/api/v1/runtime/capabilities'),
+    request<{ items: RuntimeControlPlane['requirements'] }>('/api/v1/runtime/requirements'),
+    request<{ items: RuntimeControlPlane['identities'] }>('/api/v1/runtime/object-identities'),
+    request<{ items: RuntimeControlPlane['actions'] }>('/api/v1/runtime/actions?limit=20'),
+    request<{ items: RuntimeControlPlane['goldenCases'] }>('/api/v1/runtime/golden-cases'),
+  ])
+  return {
+    mappings: mappings.items,
+    receipts: receipts.items,
+    capabilities: capabilities.items,
+    requirements: requirements.items,
+    identities: identities.items,
+    actions: actions.items,
+    goldenCases: goldenCases.items,
+  }
+}
+
+export function runRuntimeEvaluation(): Promise<RuntimeEvaluation> {
+  return request('/api/v1/runtime/evaluations', { method: 'POST' })
 }

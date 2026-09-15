@@ -363,7 +363,7 @@ def inspect_import(filename: str, content: bytes) -> dict[str, Any]:
 
 
 def convert_dbt_semantic_layer(document: dict[str, Any]) -> dict[str, Any]:
-    """Convert dbt/MetricFlow semantics into a reviewable FATHOM ONN candidate."""
+    """Convert dbt/MetricFlow semantics into a reviewable FATHOM semantic candidate."""
     semantic_models = document.get("semantic_models", [])
     metrics = document.get("metrics", [])
     if not isinstance(semantic_models, list) or not isinstance(metrics, list):

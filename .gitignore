@@ -5,6 +5,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .env
+config/fathom.yaml
+config/fathom.yml
 data/*.db
 data/*.db-*
 apps/web/node_modules/
@@ -14,3 +16,20 @@ apps/api/src/fathom/interfaces/static/
 tools/dify/
 artifacts/
 dist/
+
+# Local-only materials: internal research, office exports, audio/video.
+# These must never reach the public repository.
+docs/research/
+docs/可信问数闭环方案.md
+*.docx
+*.pptx
+*.xlsx
+*.pdf
+*.mp4
+*.mov
+*.avi
+*.webm
+*.mkv
+*.mp3
+*.wav
+*.flac

@@ -71,6 +71,10 @@ class AccessController:
             if any(path.startswith(prefix) for prefix in sensitive):
                 return ROLE_ORDER.get(role, -1) >= ROLE_ORDER["semantic_owner"]
             return True
+        if path == "/api/v1/runtime/query" or (
+            path.startswith("/api/v1/runtime/capabilities/") and path.endswith("/invoke")
+        ):
+            return ROLE_ORDER.get(role, -1) >= ROLE_ORDER["viewer"]
         viewer_paths = ("/api/v1/query/", "/a2a", "/mcp")
         if any(path.startswith(prefix) for prefix in viewer_paths):
             return ROLE_ORDER.get(role, -1) >= ROLE_ORDER["viewer"]
@@ -89,6 +93,7 @@ class AccessController:
             "/api/v1/tools/",
             "/api/v1/system/backups",
             "/api/v1/model-gateway/",
+            "/api/v1/runtime/",
         )
         if any(path.startswith(prefix) for prefix in owner_paths):
             return ROLE_ORDER.get(role, -1) >= ROLE_ORDER["semantic_owner"]

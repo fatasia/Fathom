@@ -39,7 +39,7 @@ class MetricObservationInput(BaseModel):
     dimensions: dict[str, str | int | float | bool] = Field(default_factory=dict)
 
 
-class IndustrialEventInput(BaseModel):
+class EventInput(BaseModel):
     event_type: str = Field(min_length=1, max_length=160)
     object_id: str = Field(min_length=1, max_length=160)
     occurred_at: datetime
@@ -132,7 +132,7 @@ class IngestionService:
             session.commit()
         return {"accepted": len(items), "created": created, "updated": updated}
 
-    def add_events(self, items: list[IndustrialEventInput]) -> dict[str, Any]:
+    def add_events(self, items: list[EventInput]) -> dict[str, Any]:
         self._bounded(items)
         with self._session_factory() as session:
             object_ids = {item.object_id for item in items}

@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="945" viewBox="0 0 1680 945" role="img" aria-labelledby="title desc">
+  <title id="title">FATHOM 系统总体架构 V2</title>
+  <desc id="desc">深色紫色霓虹风格的企业语义运行时总体架构，覆盖需求证据、对象身份、确定性运行时、语义模型、能力编译、受控动作、智能体网络、数据连接、安全策略、质量血缘审计与持续反馈。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#060512"/>
+      <stop offset="0.52" stop-color="#090717"/>
+      <stop offset="1" stop-color="#050410"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#261950" stop-opacity=".92"/>
+      <stop offset="1" stop-color="#15102d" stop-opacity=".94"/>
+    </linearGradient>
+    <linearGradient id="panelSoft" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1335" stop-opacity=".86"/>
+      <stop offset="1" stop-color="#0d0a1e" stop-opacity=".92"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#251550" stop-opacity=".96"/>
+      <stop offset=".55" stop-color="#130d2c" stop-opacity=".96"/>
+      <stop offset="1" stop-color="#211243" stop-opacity=".96"/>
+    </linearGradient>
+    <linearGradient id="rail" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#15112d"/>
+      <stop offset=".5" stop-color="#231544"/>
+      <stop offset="1" stop-color="#15112d"/>
+    </linearGradient>
+    <linearGradient id="greenPanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#123526"/>
+      <stop offset="1" stop-color="#071a14"/>
+    </linearGradient>
+    <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
+      <path d="M34 0H0V34" fill="none" stroke="#57409a" stroke-opacity=".12" stroke-width="1"/>
+    </pattern>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#9d72ff"/>
+    </marker>
+    <marker id="greenArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#66e38c"/>
+    </marker>
+    <style>
+      text{font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif;fill:#f8f5ff}
+      .title{font-size:48px;font-weight:800;letter-spacing:.5px}
+      .subtitle{font-size:26px;font-weight:700;fill:#cba9ff}
+      .motto{font-size:18px;font-weight:650;fill:#efe8ff}
+      .section{font-size:20px;font-weight:800;fill:#cbb0ff}
+      .label{font-size:17px;font-weight:700}
+      .small{font-size:13px;fill:#d8caee}
+      .tiny{font-size:11px;fill:#ad9cc8}
+      .mono{font-family:Consolas,"Microsoft YaHei",sans-serif;font-size:11px;fill:#b79cde}
+      .box{fill:url(#panel);stroke:#9d72ff;stroke-width:1.25}
+      .soft{fill:url(#panelSoft);stroke:#7956bb;stroke-width:1.05}
+      .node{fill:#241747;stroke:#9b6be6;stroke-width:1.1}
+      .coreBox{fill:url(#core);stroke:#9d67ff;stroke-width:1.8}
+      .railBox{fill:url(#rail);stroke:#9366da;stroke-width:1.35}
+      .greenBox{fill:url(#greenPanel);stroke:#50c979;stroke-width:1.2}
+      .purpleLine{stroke:#9d72ff;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .thinLine{stroke:#7250aa;stroke-width:1.2;fill:none;marker-end:url(#arrow)}
+      .greenLine{stroke:#66e38c;stroke-width:2;fill:none;stroke-dasharray:8 6;marker-end:url(#greenArrow)}
+    </style>
+  </defs>
+
+  <rect width="1680" height="945" fill="url(#bg)"/>
+  <rect width="1680" height="945" fill="url(#grid)"/>
+  <ellipse cx="840" cy="490" rx="620" ry="380" fill="#4b1a9a" opacity=".07" filter="url(#softGlow)"/>
+
+  <text x="840" y="56" text-anchor="middle" class="title">渊渟 FATHOM 系统总体架构 V2</text>
+  <text x="840" y="91" text-anchor="middle" class="subtitle">把需求、语义、数据与能力编译成 AI 可安全使用的企业知识</text>
+  <text x="840" y="121" text-anchor="middle" class="motto">对象中心 · 语义约束 · 确定执行 · 证据闭环</text>
+
+  <!-- Vertical governance rails -->
+  <rect x="10" y="12" width="96" height="895" rx="16" class="railBox"/>
+  <g transform="translate(58 182)">
+    <path d="M0-25L25-14V5C25 23 13 37 0 43C-13 37-25 23-25 5V-14Z" fill="#8a57ed" opacity=".95"/>
+    <path d="M-9 3L-2 10L11-5" fill="none" stroke="#160b31" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="58" y="280" text-anchor="middle" class="section"><tspan x="58">安</tspan><tspan x="58" dy="45">全</tspan><tspan x="58" dy="45">与</tspan><tspan x="58" dy="45">策</tspan><tspan x="58" dy="45">略</tspan></text>
+  <text x="58" y="560" text-anchor="middle" class="tiny"><tspan x="58">身份</tspan><tspan x="58" dy="26">权限</tspan><tspan x="58" dy="26">脱敏</tspan><tspan x="58" dy="26">审批</tspan></text>
+
+  <rect x="1574" y="12" width="96" height="895" rx="16" class="railBox"/>
+  <g transform="translate(1622 182)">
+    <rect x="-22" y="-25" width="44" height="53" rx="5" fill="#8a57ed"/>
+    <path d="M-11-12H11M-11-2H11M-11 8H5" stroke="#160b31" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="10" cy="19" r="9" fill="#160b31"/><path d="M6 19L9 22L15 15" fill="none" stroke="#b891ff" stroke-width="2"/>
+  </g>
+  <text x="1622" y="280" text-anchor="middle" class="section"><tspan x="1622">质</tspan><tspan x="1622" dy="45">量</tspan><tspan x="1622" dy="45">·</tspan><tspan x="1622" dy="45">血</tspan><tspan x="1622" dy="45">缘</tspan><tspan x="1622" dy="45">·</tspan><tspan x="1622" dy="45">审</tspan><tspan x="1622" dy="45">计</tspan></text>
+
+  <!-- Applications -->
+  <rect x="128" y="145" width="1428" height="87" rx="13" class="soft"/>
+  <text x="158" y="176" class="section"><tspan x="158">上层应用</tspan><tspan x="158" dy="26">与开放接口</tspan></text>
+  <g>
+    <rect x="330" y="158" width="210" height="60" rx="8" class="box"/><text x="435" y="194" text-anchor="middle" class="label">FATHOM Web 问数</text>
+    <rect x="550" y="158" width="190" height="60" rx="8" class="box"/><text x="645" y="194" text-anchor="middle" class="label">BI 与分析</text>
+    <rect x="750" y="158" width="190" height="60" rx="8" class="box"/><text x="845" y="194" text-anchor="middle" class="label">业务应用</text>
+    <rect x="950" y="158" width="205" height="60" rx="8" class="box"/><text x="1052" y="194" text-anchor="middle" class="label">Agent 平台</text>
+    <rect x="1165" y="158" width="370" height="60" rx="8" class="box"/><text x="1350" y="187" text-anchor="middle" class="label">OpenAPI · MCP · A2A</text><text x="1350" y="207" text-anchor="middle" class="tiny">能力目录 · 查询 · 动作</text>
+  </g>
+
+  <!-- Agent mesh -->
+  <rect x="128" y="244" width="1428" height="76" rx="13" class="soft"/>
+  <text x="158" y="274" class="section">智能体网络</text><text x="158" y="299" class="small">共享语义、策略与回执</text>
+  <g>
+    <rect x="330" y="256" width="205" height="51" rx="8" class="node"/><text x="432" y="287" text-anchor="middle" class="label">问数 Agent</text>
+    <rect x="547" y="256" width="205" height="51" rx="8" class="node"/><text x="649" y="287" text-anchor="middle" class="label">语义建模 Agent</text>
+    <rect x="764" y="256" width="205" height="51" rx="8" class="node"/><text x="866" y="287" text-anchor="middle" class="label">数据质量 Agent</text>
+    <rect x="981" y="256" width="205" height="51" rx="8" class="node"/><text x="1083" y="287" text-anchor="middle" class="label">探索分析 Agent</text>
+    <rect x="1198" y="256" width="337" height="51" rx="8" class="node"/><text x="1366" y="287" text-anchor="middle" class="label">治理运维 Agent · 动态编排</text>
+  </g>
+  <path d="M840 244V224" class="purpleLine"/>
+
+  <!-- Runtime core -->
+  <rect x="140" y="338" width="1390" height="346" rx="18" class="coreBox" filter="url(#glow)"/>
+  <text x="835" y="374" text-anchor="middle" class="section" style="font-size:28px;fill:#ffffff">企业语义运行时 Harness</text>
+
+  <!-- Requirement evidence -->
+  <rect x="162" y="392" width="250" height="214" rx="12" class="soft"/>
+  <text x="287" y="424" text-anchor="middle" class="section">需求与建模</text>
+  <text x="287" y="445" text-anchor="middle" class="tiny">Evidence-driven Modeling</text>
+  <g>
+    <rect x="180" y="462" width="99" height="47" rx="7" class="node"/><text x="229" y="481" text-anchor="middle" class="label">引用</text><text x="229" y="499" text-anchor="middle" class="tiny">来源 · 行号</text>
+    <rect x="292" y="462" width="102" height="47" rx="7" class="node"/><text x="343" y="481" text-anchor="middle" class="label">澄清</text><text x="343" y="499" text-anchor="middle" class="tiny">待确认问题</text>
+    <rect x="180" y="520" width="99" height="47" rx="7" class="node"/><text x="229" y="539" text-anchor="middle" class="label">冲突</text><text x="229" y="557" text-anchor="middle" class="tiny">口径 · 数值</text>
+    <rect x="292" y="520" width="102" height="47" rx="7" class="node"/><text x="343" y="539" text-anchor="middle" class="label">评审</text><text x="343" y="557" text-anchor="middle" class="tiny">候选 · 决策</text>
+  </g>
+  <text x="287" y="590" text-anchor="middle" class="small">需求 → 对象 / 指标 / 规则候选</text>
+
+  <!-- Deterministic runtime pipeline -->
+  <rect x="430" y="392" width="650" height="214" rx="12" class="soft"/>
+  <text x="755" y="424" text-anchor="middle" class="section">确定性执行链</text>
+  <text x="755" y="445" text-anchor="middle" class="tiny">Canonical Query → Verifiable Result</text>
+  <g>
+    <rect x="448" y="470" width="88" height="69" rx="8" class="node"/><text x="492" y="497" text-anchor="middle" class="label">识别</text><text x="492" y="519" text-anchor="middle" class="tiny">发现 · 获取</text>
+    <rect x="553" y="470" width="88" height="69" rx="8" class="node"/><text x="597" y="497" text-anchor="middle" class="label">Policy</text><text x="597" y="519" text-anchor="middle" class="tiny">身份 · 授权</text>
+    <rect x="658" y="470" width="103" height="69" rx="8" class="node"/><text x="709" y="495" text-anchor="middle" class="label">Identity</text><text x="709" y="517" text-anchor="middle" class="tiny">对象映射</text>
+    <rect x="778" y="470" width="103" height="69" rx="8" class="node"/><text x="829" y="495" text-anchor="middle" class="label">Plan</text><text x="829" y="517" text-anchor="middle" class="tiny">物理计划</text>
+    <rect x="898" y="470" width="78" height="69" rx="8" class="node"/><text x="937" y="497" text-anchor="middle" class="label">Run</text><text x="937" y="519" text-anchor="middle" class="tiny">只读执行</text>
+    <rect x="993" y="470" width="69" height="69" rx="8" class="node"/><text x="1027" y="497" text-anchor="middle" class="label">QC</text><text x="1027" y="519" text-anchor="middle" class="tiny">回执</text>
+    <path d="M536 505H550M641 505H655M761 505H775M881 505H895M976 505H990" class="thinLine"/>
+  </g>
+  <rect x="468" y="558" width="574" height="30" rx="15" fill="#3a2073" stroke="#9d67ff"/>
+  <text x="755" y="579" text-anchor="middle" class="small">同一查询哈希 · 映射版本 · 策略决策 · 结果哈希 · 全链路血缘</text>
+
+  <!-- Semantic plane -->
+  <rect x="1098" y="392" width="410" height="214" rx="12" class="soft"/>
+  <text x="1303" y="424" text-anchor="middle" class="section">统一业务语义与能力</text>
+  <text x="1303" y="445" text-anchor="middle" class="tiny">Semantic Control Plane</text>
+  <g>
+    <rect x="1118" y="462" width="176" height="38" rx="7" class="node"/><text x="1206" y="486" text-anchor="middle" class="label">对象 · 关系 · 属性</text>
+    <rect x="1310" y="462" width="178" height="38" rx="7" class="node"/><text x="1399" y="486" text-anchor="middle" class="label">指标 · 规则 · 事件</text>
+    <rect x="1118" y="511" width="176" height="38" rx="7" class="node"/><text x="1206" y="535" text-anchor="middle" class="label">版本 · 血缘 · 证据</text>
+    <rect x="1310" y="511" width="178" height="38" rx="7" class="node"/><text x="1399" y="535" text-anchor="middle" class="label">策略 · 质量 · 评测</text>
+    <rect x="1118" y="560" width="370" height="30" rx="7" fill="#32205e" stroke="#a477ef"/><text x="1303" y="581" text-anchor="middle" class="small">能力目录 · 不可变绑定 · 输入输出契约</text>
+  </g>
+
+  <path d="M412 500H427" class="purpleLine"/>
+  <path d="M1080 500H1095" class="purpleLine"/>
+
+  <!-- Capability/action band -->
+  <path d="M420 618H1500L1479 665H441Z" fill="#2a145c" stroke="#8d59e6" stroke-width="1.2"/>
+  <text x="512" y="648" text-anchor="middle" class="label">反向抽取</text><text x="635" y="648" text-anchor="middle" class="small">Schema · SQL · OpenAPI</text>
+  <text x="839" y="648" text-anchor="middle" class="label">能力编译</text><text x="970" y="648" text-anchor="middle" class="small">Metric → Capability</text>
+  <text x="1175" y="648" text-anchor="middle" class="label">受控动作</text><text x="1325" y="648" text-anchor="middle" class="small">建案 · 通知 · 审批 · 幂等</text>
+
+  <!-- Connection engine -->
+  <rect x="128" y="704" width="1428" height="82" rx="13" class="soft"/>
+  <text x="158" y="735" class="section">数据与连接引擎</text><text x="158" y="760" class="small">轻量接入 · 可替换适配器</text>
+  <g>
+    <rect x="360" y="716" width="215" height="50" rx="8" class="node"/><text x="467" y="738" text-anchor="middle" class="label">连接器与凭证引用</text><text x="467" y="757" text-anchor="middle" class="tiny">PostgreSQL · SQLite</text>
+    <rect x="588" y="716" width="215" height="50" rx="8" class="node"/><text x="695" y="738" text-anchor="middle" class="label">元数据与 Schema 探查</text><text x="695" y="757" text-anchor="middle" class="tiny">表 · 字段 · 类型 · 样本</text>
+    <rect x="816" y="716" width="215" height="50" rx="8" class="node"/><text x="923" y="738" text-anchor="middle" class="label">对象身份注册表</text><text x="923" y="757" text-anchor="middle" class="tiny">Canonical ↔ External ID</text>
+    <rect x="1044" y="716" width="215" height="50" rx="8" class="node"/><text x="1151" y="738" text-anchor="middle" class="label">SQL 安全执行</text><text x="1151" y="757" text-anchor="middle" class="tiny">只读 · 参数化 · 限时</text>
+    <rect x="1272" y="716" width="245" height="50" rx="8" class="node"/><text x="1394" y="738" text-anchor="middle" class="label">回执与可观测性</text><text x="1394" y="757" text-anchor="middle" class="tiny">Trace · Quality · Audit</text>
+  </g>
+  <path d="M840 704V686" class="purpleLine"/>
+
+  <!-- Enterprise sources -->
+  <rect x="128" y="800" width="1428" height="111" rx="13" class="soft"/>
+  <text x="158" y="838" class="section">企业数据与知识源</text><text x="158" y="865" class="small">IT · OT · 数据平台 · 非结构化</text>
+  <g>
+    <rect x="330" y="814" width="285" height="78" rx="8" class="node"/><text x="354" y="842" class="label">IT 业务系统</text><text x="354" y="868" class="small">ERP · MES · PLM · WMS · CRM</text>
+    <rect x="630" y="814" width="285" height="78" rx="8" class="node"/><text x="654" y="842" class="label">OT 与工业现场</text><text x="654" y="868" class="small">TDengine · OPC UA · MQTT · SCADA · IoT</text>
+    <rect x="930" y="814" width="285" height="78" rx="8" class="node"/><text x="954" y="842" class="label">数据平台</text><text x="954" y="868" class="small">数据库 · 时序库 · 数据仓库 · API</text>
+    <rect x="1230" y="814" width="287" height="78" rx="8" class="node"/><text x="1254" y="842" class="label">非结构化知识</text><text x="1254" y="868" class="small">文档 · 图片 · 表格 · 制度 · 知识库</text>
+  </g>
+  <path d="M840 800V788" class="purpleLine"/>
+
+  <!-- Feedback loop -->
+  <g filter="url(#glow)">
+    <rect x="1100" y="345" width="408" height="34" rx="9" class="greenBox"/>
+    <text x="1304" y="367" text-anchor="middle" class="small" style="fill:#caffd6;font-weight:700">反馈闭环 · 使用反馈 · 黄金问题 · 运行回执 · 影响分析</text>
+    <path d="M1508 362H1555V690H1538" class="greenLine"/>
+    <path d="M1100 362H1080" class="greenLine"/>
+    <path d="M1538 690H1320" class="greenLine"/>
+  </g>
+</svg>

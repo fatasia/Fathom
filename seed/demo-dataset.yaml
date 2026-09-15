@@ -1,0 +1,113 @@
+# FATHOM 示例数据集
+#
+# 与 semantic/manufacturing.execution.yaml 配套的最小事实集：让 `fathom demo-init`
+# 之后能够立即演示可信问数、语义运行时和黄金问题评测。
+#
+# 日期使用相对偏移，clone 到任何时间都能直接用：
+#   day_offset: 0 = 今天，-1 = 昨天，-2 = 前天（基准时刻为今天 08:00 UTC）。
+#
+# seed/demo-dataset.yaml 的观测值与 seed/golden-questions.yaml 的 expected_value
+# 必须严格一致，否则确定性执行门禁会失败。
+
+name: demo.manufacturing
+label: 示例制造执行数据集
+description: 用于演示语义问数、运行血缘与黄金问题评测的最小数据集。
+source_key: demo.manufacturing
+
+objects:
+  - object_id: east_plant
+    object_type: plant
+    label: 华东工厂
+    attributes: { region: 华东, timezone: Asia/Shanghai }
+  - object_id: line_01
+    object_type: production_line
+    label: 一号生产线
+    attributes: { line_code: L01, mode: mixed_model }
+  - object_id: equipment_press_01
+    object_type: equipment
+    label: 一号液压机
+    attributes: { category: hydraulic_press, criticality: A }
+  - object_id: equipment_robot_03
+    object_type: equipment
+    label: 三号视觉机器人
+    attributes: { category: vision_robot, criticality: B }
+  - object_id: work_order_240820
+    object_type: work_order
+    label: 工单 WO-240820
+    attributes: { planned_quantity: 1000, status: in_progress }
+
+relations:
+  - relation_key: plant_contains_line
+    source_id: east_plant
+    target_id: line_01
+  - relation_key: line_contains_equipment
+    source_id: line_01
+    target_id: equipment_press_01
+  - relation_key: line_contains_equipment
+    source_id: line_01
+    target_id: equipment_robot_03
+  - relation_key: work_order_runs_on_line
+    source_id: work_order_240820
+    target_id: line_01
+
+observations:
+  - metric_key: order_fulfillment_rate
+    object_id: line_01
+    day_offset: -2
+    value: 93.6
+  - metric_key: order_fulfillment_rate
+    object_id: line_01
+    day_offset: -1
+    value: 87.4
+  - metric_key: oee
+    object_id: line_01
+    day_offset: -2
+    value: 84.7
+  - metric_key: oee
+    object_id: line_01
+    day_offset: -1
+    value: 78.2
+  - metric_key: actual_output
+    object_id: line_01
+    day_offset: -2
+    value: 936.0
+  - metric_key: actual_output
+    object_id: line_01
+    day_offset: -1
+    value: 874.0
+  - metric_key: planned_output
+    object_id: line_01
+    day_offset: -2
+    value: 1000.0
+  - metric_key: planned_output
+    object_id: line_01
+    day_offset: -1
+    value: 1000.0
+  - metric_key: downtime_minutes
+    object_id: line_01
+    day_offset: -2
+    value: 62.0
+  - metric_key: downtime_minutes
+    object_id: line_01
+    day_offset: -1
+    value: 138.0
+
+events:
+  - event_type: unplanned_downtime
+    object_id: equipment_press_01
+    day_offset: -1
+    hour: 2
+    duration_minutes: 47
+    payload: { reason: 液压压力异常, line: line_01 }
+  - event_type: unplanned_downtime
+    object_id: equipment_robot_03
+    day_offset: -1
+    hour: 6
+    duration_minutes: 31
+    payload: { reason: 视觉定位失败, line: line_01 }
+  - event_type: changeover_delay
+    object_id: line_01
+    day_offset: -1
+    hour: 10
+    duration_minutes: 22
+    payload: { reason: 换型物料晚到, line: line_01 }

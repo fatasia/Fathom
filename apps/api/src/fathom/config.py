@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     storage_profile: Literal["lite", "standard"] = "lite"
     database_url: str = "sqlite:///./data/fathom.db"
     semantic_directory: Path = Path("./semantic")
+    seed_directory: Path = Path("./seed")
     backup_directory: Path = Path("./data/backups")
     enable_duckdb: bool = True
     enable_vector_search: bool = False
@@ -50,6 +51,8 @@ class Settings(BaseSettings):
     model_gateway: dict[str, Any] = Field(default_factory=dict)
     auth_enabled: bool = False
     auth_principals: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    runtime_query_timeout_seconds: int = Field(default=8, ge=1, le=120)
+    runtime_max_rows: int = Field(default=1000, ge=1, le=10_000)
     config_file: Path | None = None
 
 

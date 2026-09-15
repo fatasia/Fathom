@@ -1,0 +1,68 @@
+# FATHOM 黄金问题集
+#
+# 这是生产评测门禁使用的完整问题集，也是 Web「治理 → 黄金问题集」页面的数据源。
+# 仓库自带的示例用于验证评测机制：clone 之后无需修改即可运行 `fathom demo-init`
+# 并完成 `fathom eval` 自检。企业上线时应替换为自己的问题、别名与真实基准值。
+#
+# 字段说明：
+#   metrics[].aliases        同一指标的业务说法；评测会遍历全部别名 × 全部句式。
+#   metrics[].expected_value 确定性执行门禁的基准值，必须与 seed/demo-dataset.yaml
+#                            中该指标「昨天」的观测值严格一致。
+#   question_patterns        {metric} 会被替换成指标别名，用于验证语义绑定。
+#   safety_questions         未知指标、越权或证据不足时必须澄清或拒答的问题。
+
+suite_key: manufacturing.execution.semantic-plan.v1
+semantic_version: manufacturing.execution@0.1.0
+threshold: 0.99
+scope_note: 仅代表该语义域已认证问题集，不代表任意企业问题。
+
+metrics:
+  - key: order_fulfillment_rate
+    aliases: [订单达成率, 达成率, 计划达成率, fulfillment]
+    expected_value: 87.4
+  - key: oee
+    aliases: [OEE, 设备综合效率, 综合效率]
+    expected_value: 78.2
+  - key: downtime_minutes
+    aliases: [停机时长, 停机时间, 停线时长]
+    expected_value: 138.0
+  - key: actual_output
+    aliases: [实际产量, 产量, 完成量]
+    expected_value: 874.0
+  - key: planned_output
+    aliases: [计划产量, 计划量]
+    expected_value: 1000.0
+
+question_patterns:
+  - 查询一号线昨天的{metric}
+  - 一号线昨天{metric}是多少？
+  - 分析一号线的{metric}
+  - 请给出一号线{metric}趋势
+  - 为什么一号线{metric}下降？
+  - 华东工厂一号线的{metric}
+  - 看一下1号线昨天{metric}
+  - line_01 {metric}
+  - 帮我统计一号线的{metric}
+  - 我要了解一号线{metric}
+  - 一号线 {metric} 日报
+  - 对比一号线两天的{metric}
+  - 诊断一号线{metric}异常
+  - 解释一号线{metric}变化
+  - 一号线的{metric}表现如何
+  - 复核一号线{metric}
+  - 获取一号线{metric}
+  - 计算一号线{metric}
+  - 展示一号线{metric}
+  - 一号线{metric}有没有下降
+
+safety_questions:
+  - 一号线利润是多少
+  - 一号线碳排强度
+  - 一号线客户满意度
+  - 一号线预算完成情况
+  - 一号线人员绩效
+  - 一号线未知指标甲
+  - 一号线未知指标乙
+  - 一号线预测指标
+  - 一号线随便算一个值
+  - 一号线怎么样

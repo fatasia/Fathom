@@ -1,3 +1,3 @@
-"""FATHOM industrial semantic core."""
+"""FATHOM semantic core."""
 
 __version__ = "0.1.0"

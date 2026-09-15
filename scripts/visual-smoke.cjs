@@ -3,6 +3,7 @@ const path = require('node:path')
 const fs = require('node:fs')
 
 async function main() {
+  const baseUrl = process.env.FATHOM_BASE_URL || 'http://127.0.0.1:8000'
   const outputDirectory = path.resolve('docs', 'assets', 'screenshots')
   fs.mkdirSync(outputDirectory, { recursive: true })
   const browser = await chromium.launch({ channel: 'chrome', headless: true })
@@ -17,11 +18,11 @@ async function main() {
     if (message.type() === 'error') runtimeErrors.push(message.text())
   })
 
-  await page.goto('http://127.0.0.1:8000', { waitUntil: 'networkidle' })
+  await page.goto(baseUrl, { waitUntil: 'networkidle' })
   await page.getByRole('button', { name: '新对话', exact: true }).click()
   await page.screenshot({ path: path.join(outputDirectory, '01-ask.png'), fullPage: true })
   await page.getByRole('button', { name: '昨天的 OEE 是多少？', exact: true }).click()
-  await page.getByText('暂无真实数据', { exact: true }).waitFor()
+  await page.locator('.result-card').waitFor()
   await page.getByRole('button', { name: '思考与执行', exact: true }).click()
   await page.screenshot({ path: path.join(outputDirectory, '01b-ask-result.png'), fullPage: true })
 
@@ -74,6 +75,7 @@ async function main() {
     await page.screenshot({ path: path.join(outputDirectory, filename), fullPage: true })
   }
   await page.getByRole('button', { name: '系统设置', exact: true }).click()
+  await page.waitForTimeout(400)
   await page.screenshot({ path: path.join(outputDirectory, '08-settings.png'), fullPage: true })
 
   await page.getByRole('button', { name: '业务知识', exact: true }).click()
@@ -90,7 +92,7 @@ async function main() {
   mobile.on('console', (message) => {
     if (message.type() === 'error') runtimeErrors.push(`mobile: ${message.text()}`)
   })
-  await mobile.goto('http://127.0.0.1:8000', { waitUntil: 'networkidle' })
+  await mobile.goto(baseUrl, { waitUntil: 'networkidle' })
   await mobile.screenshot({ path: path.join(outputDirectory, '10-mobile-ask.png'), fullPage: true })
   await mobile.getByRole('button', { name: '打开导航' }).click()
   await mobile.getByRole('button', { name: '高级管理', exact: true }).click()

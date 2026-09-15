@@ -25,6 +25,25 @@ class SemanticBinding(BaseModel):
     comparison: str | None = None
 
 
+class MqlFilter(BaseModel):
+    field: str
+    operator: str = "eq"
+    value: str | int | float | bool
+
+
+class MqlQuery(BaseModel):
+    """Validated semantic query IR. This is data, never executable SQL."""
+
+    metric: str
+    object_ids: list[str] = Field(min_length=1)
+    dimensions: list[str] = Field(default_factory=list)
+    filters: list[MqlFilter] = Field(default_factory=list)
+    time_range: str = "latest"
+    comparison: str | None = None
+    limit: int = Field(default=2, ge=1, le=1000)
+    semantic_version: str | None = None
+
+
 class AbcStage(BaseModel):
     code: str
     name: str
@@ -38,6 +57,7 @@ class FathomPlan(BaseModel):
     intent: str
     anchors: list[PlanAnchor]
     binding: SemanticBinding | None = None
+    mql: MqlQuery | None = None
     abc: list[AbcStage] = Field(default_factory=list)
     policy_scope: dict[str, Any] = Field(default_factory=dict)
     validations: list[str] = Field(default_factory=list)
@@ -79,3 +99,6 @@ class AskResponse(BaseModel):
     trace_id: str
     semantic_version: str
     data_freshness: str
+    verification_status: str = "not_applicable"
+    turn_id: str | None = None
+    analysis_run_id: str | None = None

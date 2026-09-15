@@ -17,10 +17,15 @@ from fathom.application.agent_mesh import AgentRunInput, agent_mesh_overview
 from fathom.application.capabilities import detect_capabilities
 from fathom.application.conversations import ConversationCreate, ConversationRename
 from fathom.application.data_sources import DataSourceInput, connector_catalog
+from fathom.application.feedback import (
+    ExternalFeedbackInput,
+    ExternalMessageLinkInput,
+    FeedbackInput,
+    FeedbackResolution,
+)
 from fathom.application.governance import GovernanceDecision, SemanticAssetProposal
-from fathom.application.evaluation import golden_question_catalog
 from fathom.application.ingestion import (
-    IndustrialEventInput,
+    EventInput,
     MetricObservationInput,
     ObjectInstanceInput,
     RelationInput,
@@ -52,6 +57,22 @@ from fathom.application.python_extensions import (
 )
 from fathom.domains.pipelines.models import PipelineDefinition
 from fathom.domains.query.models import AskRequest, AskResponse, QueryAttachment
+from fathom.domains.runtime.models import (
+    CapabilityCompileInput,
+    CapabilityInput,
+    CapabilityInvocationInput,
+    DataQualityContractInput,
+    DependencyEdgeInput,
+    GoldenCaseInput,
+    LegacyAssetExtractInput,
+    MappingContractInput,
+    ObjectIdentityInput,
+    RequirementEvidenceInput,
+    RequirementExploreInput,
+    RequirementReviewInput,
+    ReverseMappingInput,
+    RuntimeQueryInput,
+)
 from fathom.domains.semantics.models import DomainContract
 
 router = APIRouter(prefix="/api/v1")
@@ -59,6 +80,13 @@ router = APIRouter(prefix="/api/v1")
 
 def _authorized_objects(request: Request) -> set[str] | None:
     return getattr(request.state, "authorized_objects", None)
+
+
+def _runtime_identity(request: Request) -> dict[str, str]:
+    return {
+        "principal": str(getattr(request.state, "principal", "local")),
+        "role": str(getattr(request.state, "role", "admin")),
+    }
 
 
 def _ensure_object_access(request: Request, object_id: str) -> None:
@@ -123,8 +151,8 @@ def latest_evaluation(request: Request) -> dict:
 
 
 @router.get("/governance/golden-question-set")
-def get_golden_question_set() -> dict:
-    return golden_question_catalog()
+def get_golden_question_set(request: Request) -> dict:
+    return request.app.state.golden_question_set.catalog()
 
 
 @router.post("/governance/evaluations")
@@ -390,7 +418,7 @@ def ingest_metric_observations(payload: list[MetricObservationInput], request: R
 
 
 @router.post("/ingestion/events")
-def ingest_events(payload: list[IndustrialEventInput], request: Request) -> dict:
+def ingest_events(payload: list[EventInput], request: Request) -> dict:
     _ensure_objects_access(request, {item.object_id for item in payload})
     try:
         return request.app.state.ingestion_service.add_events(payload)
@@ -446,11 +474,79 @@ def delete_conversation(conversation_id: str, request: Request) -> Response:
     return Response(status_code=204)
 
 
+@router.post("/query/conversations/{conversation_id}/turns/{turn_id}/feedback")
+def submit_turn_feedback(
+    conversation_id: str,
+    turn_id: str,
+    payload: FeedbackInput,
+    request: Request,
+) -> dict:
+    try:
+        return request.app.state.feedback_service.submit_turn(
+            conversation_id, turn_id, payload
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/feedback")
+def list_feedback(request: Request, status: str | None = None, limit: int = 100) -> dict:
+    return {"items": request.app.state.feedback_service.list(status=status, limit=limit)}
+
+
+@router.post("/feedback/{feedback_id}/resolve")
+def resolve_feedback(
+    feedback_id: str, payload: FeedbackResolution, request: Request
+) -> dict:
+    try:
+        return request.app.state.feedback_service.resolve(feedback_id, payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/integrations/external/message-links")
+def link_external_message(payload: ExternalMessageLinkInput, request: Request) -> dict:
+    try:
+        return request.app.state.feedback_service.link_external(payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/integrations/external/feedback/import")
+def import_external_feedback(payload: ExternalFeedbackInput, request: Request) -> dict:
+    return request.app.state.feedback_service.import_external(payload)
+
+
+@router.get("/semantic-extraction/runs")
+def list_semantic_extraction_runs(request: Request, limit: int = 100) -> dict:
+    return {"items": request.app.state.semantic_extraction_service.list_runs(limit)}
+
+
+@router.post("/data-sources/{source_key}/extract")
+def extract_data_source_semantics(source_key: str, request: Request) -> dict:
+    try:
+        return request.app.state.semantic_extraction_service.extract_data_source(source_key)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.get("/analysis-runs/{analysis_run_id}")
+def get_analysis_run(analysis_run_id: str, request: Request) -> dict:
+    result = request.app.state.diagnosis_service.get(analysis_run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="分析运行不存在")
+    return result
+
+
 @router.post("/query/ask", response_model=AskResponse)
 def ask_data(payload: AskRequest, request: Request) -> AskResponse:
     try:
         result = request.app.state.query_service.ask(
-            payload, getattr(request.state, "authorized_objects", None)
+            payload,
+            _authorized_objects(request),
+            **_runtime_identity(request),
         )
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
@@ -469,7 +565,9 @@ def ask_data_text(payload: AskRequest, request: Request) -> PlainTextResponse:
     """Return only the user-facing answer for chat tools and simple workflows."""
     try:
         result = request.app.state.query_service.ask(
-            payload, getattr(request.state, "authorized_objects", None)
+            payload,
+            _authorized_objects(request),
+            **_runtime_identity(request),
         )
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
@@ -509,7 +607,9 @@ def ask_data_stream(payload: AskRequest, request: Request) -> StreamingResponse:
             yield f"event: progress\ndata: {data}\n\n"
         try:
             result = request.app.state.query_service.ask(
-                payload, getattr(request.state, "authorized_objects", None)
+                payload,
+                _authorized_objects(request),
+                **_runtime_identity(request),
             )
         except PermissionError as error:
             data = json.dumps({"message": str(error)}, ensure_ascii=False)
@@ -935,6 +1035,263 @@ def scaffold_data_source(source_key: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.get("/runtime/mappings")
+def list_runtime_mappings(request: Request, metric_key: str | None = None) -> dict:
+    return {"items": request.app.state.mapping_registry.list(metric_key)}
+
+
+@router.put("/runtime/mappings/{mapping_key}/versions/{version}")
+def save_runtime_mapping(
+    mapping_key: str,
+    version: int,
+    payload: MappingContractInput,
+    request: Request,
+) -> dict:
+    if payload.key != mapping_key or payload.version != version:
+        raise HTTPException(status_code=409, detail="路径中的映射标识/版本与载荷不一致")
+    try:
+        return request.app.state.semantic_runtime_service.register_mapping(payload)
+    except (LookupError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/runtime/mappings/{mapping_key}/versions/{version}/compatibility")
+def check_runtime_mapping(mapping_key: str, version: int, request: Request) -> dict:
+    try:
+        return request.app.state.mapping_registry.check_compatibility(mapping_key, version)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/runtime/mappings/{mapping_key}/versions/{version}/publish")
+def publish_runtime_mapping(mapping_key: str, version: int, request: Request) -> dict:
+    try:
+        return request.app.state.semantic_runtime_service.publish_mapping(mapping_key, version)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/runtime/mappings/{mapping_key}/versions/{version}/rollback")
+def rollback_runtime_mapping(mapping_key: str, version: int, request: Request) -> dict:
+    try:
+        return request.app.state.mapping_registry.rollback(mapping_key, version)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/runtime/query")
+def execute_runtime_query(payload: RuntimeQueryInput, request: Request) -> dict:
+    try:
+        result = request.app.state.semantic_runtime_service.execute(
+            payload.query,
+            authorized_objects=_authorized_objects(request),
+            **_runtime_identity(request),
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except LookupError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {
+        "rows": result["rows"],
+        "compiled": result["compiled"],
+        "receipt": result["receipt"],
+        "mapping": result["mapping"],
+        "policy_decision": result["policy_decision"],
+        "quality": result["quality"],
+        "route_attempts": result["route_attempts"],
+        "verification_status": result["verification_status"],
+    }
+
+
+@router.get("/runtime/receipts")
+def list_runtime_receipts(request: Request, limit: int = 100) -> dict:
+    return {"items": request.app.state.semantic_runtime_service.list_receipts(limit)}
+
+
+@router.get("/runtime/requirements")
+def list_runtime_requirements(request: Request) -> dict:
+    return {"items": request.app.state.requirement_service.list()}
+
+
+@router.post("/runtime/requirements")
+def save_runtime_requirement(payload: RequirementEvidenceInput, request: Request) -> dict:
+    return request.app.state.requirement_service.save(payload)
+
+
+@router.post("/runtime/requirements/explore")
+def explore_runtime_requirement(payload: RequirementExploreInput, request: Request) -> dict:
+    return request.app.state.requirement_service.explore(payload)
+
+
+@router.post("/runtime/requirements/{requirement_key}/review")
+def review_runtime_requirement(
+    requirement_key: str, payload: RequirementReviewInput, request: Request
+) -> dict:
+    try:
+        return request.app.state.requirement_service.review(requirement_key, payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/runtime/object-identities")
+def list_runtime_object_identities(
+    request: Request,
+    canonical_object_id: str | None = None,
+    source_key: str | None = None,
+) -> dict:
+    return {
+        "items": request.app.state.object_identity_service.list(
+            canonical_object_id, source_key
+        )
+    }
+
+
+@router.post("/runtime/object-identities")
+def save_runtime_object_identity(payload: ObjectIdentityInput, request: Request) -> dict:
+    try:
+        return request.app.state.object_identity_service.save(payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.get("/runtime/lineage")
+def list_runtime_lineage(request: Request, node: str | None = None) -> dict:
+    return {"items": request.app.state.lineage_service.list(node)}
+
+
+@router.post("/runtime/lineage")
+def save_runtime_lineage(payload: DependencyEdgeInput, request: Request) -> dict:
+    return request.app.state.lineage_service.add(payload)
+
+
+@router.get("/runtime/impact")
+def get_runtime_impact(node: str, request: Request) -> dict:
+    return request.app.state.lineage_service.impact(node)
+
+
+@router.get("/runtime/quality-contracts")
+def list_runtime_quality_contracts(request: Request) -> dict:
+    return {"items": request.app.state.data_quality_service.list()}
+
+
+@router.put("/runtime/quality-contracts/{contract_key}")
+def save_runtime_quality_contract(
+    contract_key: str, payload: DataQualityContractInput, request: Request
+) -> dict:
+    if payload.key != contract_key:
+        raise HTTPException(status_code=409, detail="路径中的质量契约标识与载荷不一致")
+    return request.app.state.data_quality_service.save(payload)
+
+
+@router.get("/runtime/golden-cases")
+def list_runtime_golden_cases(request: Request) -> dict:
+    return {"items": request.app.state.runtime_evaluation_service.list_cases()}
+
+
+@router.put("/runtime/golden-cases/{case_key}")
+def save_runtime_golden_case(
+    case_key: str, payload: GoldenCaseInput, request: Request
+) -> dict:
+    if payload.key != case_key:
+        raise HTTPException(status_code=409, detail="路径中的黄金问题标识与载荷不一致")
+    return request.app.state.runtime_evaluation_service.save_case(payload)
+
+
+@router.post("/runtime/evaluations")
+def run_runtime_evaluation(request: Request) -> dict:
+    return request.app.state.runtime_evaluation_service.run()
+
+
+@router.get("/runtime/capabilities")
+def list_runtime_capabilities(request: Request, published_only: bool = True) -> dict:
+    return {"items": request.app.state.capability_registry.list(published_only)}
+
+
+@router.post("/runtime/capabilities/compile")
+def compile_runtime_capability(payload: CapabilityCompileInput, request: Request) -> dict:
+    try:
+        return request.app.state.capability_registry.compile_metric(payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.put("/runtime/capabilities/{capability_key}")
+def save_runtime_capability(
+    capability_key: str, payload: CapabilityInput, request: Request
+) -> dict:
+    if payload.key != capability_key:
+        raise HTTPException(status_code=409, detail="路径中的能力标识与载荷不一致")
+    try:
+        return request.app.state.capability_registry.save(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/runtime/capabilities/{capability_key}/publish")
+def publish_runtime_capability(capability_key: str, request: Request) -> dict:
+    try:
+        return request.app.state.capability_registry.publish(capability_key)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/runtime/capabilities/{capability_key}/invoke")
+def invoke_runtime_capability(
+    capability_key: str, payload: CapabilityInvocationInput, request: Request
+) -> dict:
+    try:
+        return request.app.state.capability_registry.invoke(
+            capability_key,
+            payload.arguments,
+            authorized_objects=_authorized_objects(request),
+            approval_token=payload.approval_token,
+            **_runtime_identity(request),
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post("/runtime/reverse-mappings")
+def propose_reverse_mappings(payload: ReverseMappingInput, request: Request) -> dict:
+    try:
+        return request.app.state.reverse_mapping_service.propose(payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/runtime/reverse-assets")
+def extract_legacy_runtime_assets(
+    payload: LegacyAssetExtractInput, request: Request
+) -> dict:
+    try:
+        return request.app.state.reverse_mapping_service.extract_legacy(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.get("/runtime/actions")
+def list_runtime_actions(request: Request, limit: int = 100) -> dict:
+    return {"items": request.app.state.action_service.list(limit)}
 
 
 @router.get("/pipelines/capabilities")

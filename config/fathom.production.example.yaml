@@ -9,6 +9,8 @@ enable_vector_search: false
 duckdb_memory_limit: "512MB"
 duckdb_threads: 2
 dify_console_url: "http://127.0.0.1"
+runtime_query_timeout_seconds: 8
+runtime_max_rows: 1000
 
 auth_enabled: true
 auth_principals:

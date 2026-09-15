@@ -7,6 +7,7 @@ from uuid import uuid4
 from fathom.adapters.storage.database import AgentRunRecord
 from fathom.application.data_sources import DataSourceService
 from fathom.application.query_service import QueryService
+from fathom.application.semantic_extraction import SemanticExtractionService
 from fathom.domains.query.models import AskRequest
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -35,7 +36,7 @@ BUILTIN_AGENTS: list[dict[str, Any]] = [
         "key": "ontology_mapper",
         "name": "本体映射智能体",
         "layer": "cognition",
-        "description": "把物理表、字段、事件和图像锚定到 ONN 六元业务对象空间。",
+        "description": "把物理表、字段、事件和图像锚定到统一的业务对象语义空间。",
         "model_role": "semantic_extractor",
         "tools": ["search_semantics", "propose_mapping", "validate_onn"],
         "status": "core",
@@ -169,7 +170,7 @@ def agent_mesh_overview() -> dict[str, Any]:
     for agent in BUILTIN_AGENTS:
         counts[agent["layer"]] = counts.get(agent["layer"], 0) + 1
     return {
-        "architecture": "ONN-constrained capability mesh",
+        "architecture": "semantic-constrained capability mesh",
         "agents": BUILTIN_AGENTS,
         "flows": AGENT_FLOWS,
         "counts": counts,
@@ -198,10 +199,12 @@ class AgentMeshRuntime:
         session_factory: sessionmaker[Session],
         query_service: QueryService,
         data_source_service: DataSourceService,
+        semantic_extraction_service: SemanticExtractionService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._query_service = query_service
         self._data_source_service = data_source_service
+        self._semantic_extraction_service = semantic_extraction_service
 
     def run(
         self,
@@ -296,8 +299,20 @@ class AgentMeshRuntime:
     def _run_guided_onboarding(self, payload: AgentRunInput) -> dict[str, Any]:
         if not payload.source_key:
             raise ValueError("guided_onboarding requires source_key")
-        discovered = self._data_source_service.discover(payload.source_key)
-        scaffold = self._data_source_service.scaffold(payload.source_key)
+        extracted = (
+            self._semantic_extraction_service.extract_data_source(
+                payload.source_key,
+                business_questions=payload.question or "",
+            )
+            if self._semantic_extraction_service is not None
+            else {
+                "discovery": self._data_source_service.discover(payload.source_key),
+                "scaffold": self._data_source_service.scaffold(payload.source_key),
+                "governance": {"created": []},
+            }
+        )
+        discovered = extracted["discovery"]
+        scaffold = extracted["scaffold"]
         receipts = [
             self._receipt(
                 1,
@@ -311,14 +326,24 @@ class AgentMeshRuntime:
                 "completed",
                 f"生成 {len(scaffold['objects'])} 个候选对象",
             ),
-            self._receipt(3, "metric_builder", "needs_review", "等待业务问题与指标口径确认"),
-            self._receipt(4, "evolution_steward", "ready_to_publish", "候选项等待一键评测发布"),
+            self._receipt(
+                3,
+                "metric_builder",
+                "needs_review",
+                f"提炼 {len(extracted.get('candidates', []))} 个语义候选，禁止自动发布",
+            ),
+            self._receipt(
+                4,
+                "evolution_steward",
+                "ready_to_publish",
+                f"{len(extracted.get('governance', {}).get('created', []))} 个变更进入治理评审",
+            ),
         ]
         return {
             "status": "awaiting_approval",
             "trace_id": None,
             "receipts": receipts,
-            "output": {"discovery": discovered, "scaffold": scaffold},
+            "output": extracted,
         }
 
     def _run_adaptive_diagnosis(

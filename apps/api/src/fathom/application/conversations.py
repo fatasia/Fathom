@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from fathom.adapters.storage.database import ConversationRecord, ConversationTurnRecord
+from fathom.application.feedback import FeedbackService
 from fathom.domains.query.models import AskRequest, AskResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
@@ -21,8 +22,13 @@ class ConversationRename(BaseModel):
 class ConversationService:
     """Persist user-visible chat sessions without storing attachment bodies."""
 
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        feedback_service: FeedbackService | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._feedback_service = feedback_service
 
     def create(self, title: str = "新对话") -> dict:
         now = datetime.now(UTC)
@@ -144,6 +150,8 @@ class ConversationService:
         response: AskResponse,
     ) -> dict:
         now = datetime.now(UTC)
+        if self._feedback_service is not None:
+            self._feedback_service.capture_implicit(conversation_id, request.question)
         with self._session_factory() as session:
             conversation = session.get(ConversationRecord, conversation_id)
             if conversation is None:
@@ -169,6 +177,7 @@ class ConversationService:
                 conversation.title = self._clean_title(request.question)
             conversation.updated_at = now
             session.commit()
+        response.turn_id = turn.turn_id
         return self._serialize_turn(turn)
 
     @staticmethod

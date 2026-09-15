@@ -1,7 +1,7 @@
 [project]
 name = "fathom-industrial-semantic-core"
 version = "0.1.0"
-description = "渊渟 FATHOM：轻量工业本体、语义层与智能体执行底座"
+description = "渊渟 FATHOM：轻量本体、语义层与智能体执行底座"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

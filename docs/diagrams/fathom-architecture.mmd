@@ -3,7 +3,7 @@ flowchart TB
   subgraph access[用户与上层应用]
     direction LR
     web[🌊 FATHOM Web<br/>问数 · 建模 · 治理 · 工程]
-    dify[对话与智能体平台<br/>Chatflow / Agent]
+    platform[对话与智能体平台<br/>Chatflow / Agent]
     apps[BI · 运营 · 分析应用<br/>REST / OpenAPI / MCP / A2A]
   end
 
@@ -15,15 +15,15 @@ flowchart TB
     api --> mesh --> trust
   end
 
-  subgraph harness[语义 Harness：ABC 编译与执行]
+  subgraph harness[语义 Harness：识别 → 构建 → 计算]
     direction LR
-    acquire[Acquire 获取<br/>意图 · 对象 · 时间 · 权限 · 数据范围]
-    build[Build 构建<br/>本体约束计划 · 指标绑定 · 关系路径]
-    compute[Compute 计算<br/>SQL / DSL · 质量校验 · 确定性执行]
+    acquire[识别<br/>意图 · 对象 · 时间 · 权限 · 数据范围]
+    build[构建<br/>本体约束计划 · 指标绑定 · 关系路径]
+    compute[计算<br/>SQL / DSL · 质量校验 · 确定性执行]
     acquire --> build --> compute
   end
 
-  subgraph onn[ONN 对象网络与语义层]
+  subgraph semantic_layer[语义层与对象网络]
     direction LR
     objects[对象 · 关系 · 属性]
     metrics[指标 · 维度 · 粒度 · 单位]
@@ -44,7 +44,7 @@ flowchart TB
   sources[(企业事实源<br/>IT · OT · 业务 · 数据 · 组织 · 空间)]
 
   web --> api
-  dify --> api
+  platform --> api
   apps --> api
   trust --> acquire
   build --> objects

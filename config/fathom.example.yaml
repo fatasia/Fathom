@@ -9,6 +9,8 @@ duckdb_memory_limit: "512MB"
 duckdb_threads: 2
 dify_console_url: "http://127.0.0.1"
 auth_enabled: false
+runtime_query_timeout_seconds: 8
+runtime_max_rows: 1000
 
 # 生产环境建议开启。token_hash 可用 `fathom token-hash <token>` 生成。
 # 原始令牌不写入配置文件。

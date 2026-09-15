@@ -1,16 +1,16 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "Microsoft YaHei, Inter, sans-serif", "primaryColor": "#F3EEFF", "primaryTextColor": "#21163A", "primaryBorderColor": "#7C5CFC", "lineColor": "#7457D8", "secondaryColor": "#E8FAF4", "tertiaryColor": "#FFF7E8"}, "flowchart": {"curve": "basis", "nodeSpacing": 24, "rankSpacing": 38}}}%%
 flowchart TD
-  ask([用户直接提问<br/>无需选择对象或填写参数]) --> entry[对话入口接收上下文<br/>FATHOM Web / Chatflow / Agent]
+  ask([用户直接提问<br/>无需选择对象或填写参数]) --> entry[对话入口接收上下文<br/>FATHOM Web / 工作流平台 / Agent]
   entry --> classify{问题类型}
 
-  classify -- 企业数值或状态 --> acquire[Acquire<br/>识别对象、时间、权限与可用数据]
+  classify -- 企业数值或状态 --> acquire[识别<br/>对象、时间、权限与可用数据]
   acquire --> anchor{对象与范围<br/>能否唯一锚定？}
   anchor -- 否 --> clarify[用业务语言澄清<br/>给出可选范围，不暴露内部 ID]
   clarify --> ask
-  anchor -- 是 --> build[Build<br/>绑定指标口径、关系路径与数据来源]
+  anchor -- 是 --> build[构建<br/>绑定指标口径、关系路径与数据来源]
   build --> validate{语义、权限、质量<br/>校验通过？}
   validate -- 否 --> safe[安全失败<br/>说明缺少的数据或定义，不编造数值]
-  validate -- 是 --> compute[Compute<br/>生成只读计划并确定性执行]
+  validate -- 是 --> compute[计算<br/>生成只读计划并确定性执行]
   compute --> evidence[组织答案、证据、数据新鲜度<br/>语义版本与 trace]
 
   classify -- 定义、制度或方法 --> retrieve[检索语义层与知识库<br/>保留来源]

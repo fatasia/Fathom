@@ -71,12 +71,14 @@ def test_accuracy_gate_is_productized_and_persisted(tmp_path: Path) -> None:
     with TestClient(create_app(settings)) as client:
         empty = client.get("/api/v1/governance/evaluations/latest")
         run = client.post("/api/v1/governance/evaluations")
+        runtime_run = client.post("/api/v1/runtime/evaluations")
         latest = client.get("/api/v1/governance/evaluations/latest")
 
     assert empty.json()["status"] == "not_run"
     assert run.json()["total"] == 100
     assert run.json()["accuracy"] >= 0.99
     assert run.json()["passed"] is True
+    assert runtime_run.json()["suite_key"] == "runtime.external.golden"
     assert all(gate["passed"] for gate in run.json()["gates"].values())
     assert "任意企业问题" in run.json()["scope_note"]
     assert latest.json()["report"]["run_id"] == run.json()["run_id"]

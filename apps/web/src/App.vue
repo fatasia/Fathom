@@ -2,6 +2,7 @@
 import {
   Activity,
   ArrowRight,
+  BellRing,
   Blocks,
   BookOpen,
   Boxes,
@@ -32,6 +33,8 @@ import {
   Sparkles,
   UploadCloud,
   Trash2,
+  ThumbsDown,
+  ThumbsUp,
   Waves,
   Wrench,
   Workflow,
@@ -63,6 +66,7 @@ import {
   fetchPipelines,
   fetchPythonExtensions,
   fetchPythonExtensionRuns,
+  fetchRuntimeControlPlane,
   fetchSemanticOverview,
   fetchSemanticChanges,
   fetchSqlTemplates,
@@ -82,6 +86,7 @@ import {
   runAgentFlow,
   runPythonExtension,
   runCertifiedEvaluation,
+  runRuntimeEvaluation,
   decideSemanticChange,
   testDataSource,
   testKnowledgeBase,
@@ -89,6 +94,7 @@ import {
   uploadQueryAttachment,
   deleteKnowledgeDocument,
   searchKnowledge,
+  submitTurnFeedback,
   restoreBackup,
   renameConversation,
   probeModelProvider,
@@ -119,6 +125,8 @@ import type {
   PythonExtension,
   PythonExtensionRun,
   QueryAttachment,
+  RuntimeControlPlane,
+  RuntimeEvaluation,
   SemanticOverview,
   SemanticChange,
   SqlTemplate,
@@ -127,7 +135,7 @@ import type {
   StoredPipeline,
 } from './types'
 
-type Workspace = 'ask' | 'ontology' | 'knowledge' | 'metrics' | 'agents' | 'connections' | 'studio' | 'governance' | 'settings'
+type Workspace = 'ask' | 'ontology' | 'knowledge' | 'metrics' | 'agents' | 'connections' | 'runtime' | 'studio' | 'governance' | 'settings'
 type ConversationTurn = {
   id: string
   question: string
@@ -139,6 +147,8 @@ type ConversationTurn = {
   streamedAnswer: string
   stage: string
   stageMessage: string
+  feedback: 'like' | 'dislike' | null
+  feedbackBusy: boolean
 }
 
 const workspace = ref<Workspace>('ask')
@@ -177,6 +187,10 @@ const modelPresets = ref<ModelProviderPreset[]>([])
 const modelRoutes = ref<ModelRoute[]>([])
 const effectiveConfiguration = ref<EffectiveConfiguration | null>(null)
 const evaluationReport = ref<EvaluationReport | null>(null)
+const runtimeControl = ref<RuntimeControlPlane | null>(null)
+const runtimeEvaluation = ref<RuntimeEvaluation | null>(null)
+const runtimeBusy = ref(false)
+const runtimeMessage = ref('')
 const goldenQuestionSet = ref<GoldenQuestionSet | null>(null)
 const goldenQuestionCategory = ref('all')
 const goldenQuestionQuery = ref('')
@@ -297,6 +311,7 @@ const primaryNavItems: Array<{ key: Workspace; label: string; icon: typeof Spark
 
 const advancedNavItems: Array<{ key: Workspace; label: string; icon: typeof Sparkles }> = [
   { key: 'metrics', label: '指标中心', icon: Activity },
+  { key: 'runtime', label: '语义运行时', icon: Blocks },
   { key: 'agents', label: '智能体网络', icon: Workflow },
   { key: 'studio', label: '工程工具', icon: Wrench },
   { key: 'governance', label: '学习与治理', icon: ShieldCheck },
@@ -600,6 +615,31 @@ async function loadEvaluation() {
   goldenQuestionSet.value = questionSet
 }
 
+async function loadRuntimeControl() {
+  try {
+    runtimeControl.value = await fetchRuntimeControlPlane()
+  } catch (runtimeError) {
+    runtimeMessage.value = runtimeError instanceof Error ? runtimeError.message : '语义运行时暂不可用'
+  }
+}
+
+async function evaluateRuntime() {
+  if (runtimeBusy.value) return
+  runtimeBusy.value = true
+  runtimeMessage.value = '正在重放外部数据黄金问题…'
+  try {
+    runtimeEvaluation.value = await runRuntimeEvaluation()
+    runtimeMessage.value = runtimeEvaluation.value.passed
+      ? `${runtimeEvaluation.value.passed_count}/${runtimeEvaluation.value.total} 个运行时问题通过`
+      : `运行时门禁失败：${runtimeEvaluation.value.passed_count}/${runtimeEvaluation.value.total}`
+    await loadRuntimeControl()
+  } catch (runtimeError) {
+    runtimeMessage.value = runtimeError instanceof Error ? runtimeError.message : '运行时评测失败'
+  } finally {
+    runtimeBusy.value = false
+  }
+}
+
 async function runGoldenSet() {
   governanceBusy.value = 'golden-set'
   governanceMessage.value = '正在运行黄金问题集…'
@@ -653,11 +693,12 @@ async function generateDomainCandidate() {
     return
   }
   builderLoading.value = true
-  builderMessage.value = '正在发现 Schema、生成 ONN 候选并执行冲突前检…'
+  builderMessage.value = '正在发现 Schema、生成语义候选并执行冲突前检…'
   try {
     builderRun.value = await runAgentFlow({
       flow_key: 'guided_onboarding',
       source_key: builderSource.value,
+      question: builderQuestions.value.trim() || undefined,
     })
     builderStep.value = 4
     builderMessage.value = '候选已生成，未写入生产语义。'
@@ -755,6 +796,8 @@ async function openConversation(conversationId: string) {
       streamedAnswer: turn.response.answer,
       stage: 'compute',
       stageMessage: '已完成',
+      feedback: null,
+      feedbackBusy: false,
     }))
     result.value = conversationHistory.value.at(-1)?.result ?? null
     await nextTick()
@@ -813,6 +856,8 @@ async function submitQuestion(nextQuestion?: string) {
     streamedAnswer: '',
     stage: 'acquire',
     stageMessage: '正在理解问题与业务范围',
+    feedback: null,
+    feedbackBusy: false,
   }
   conversationHistory.value.push(turn)
   question.value = ''
@@ -837,6 +882,7 @@ async function submitQuestion(nextQuestion?: string) {
       },
     })
     turn.result = result.value
+    if (result.value.turn_id) turn.id = result.value.turn_id
     await loadConversationIndex()
   } catch (requestError) {
     turn.error = requestError instanceof Error ? requestError.message : '分析失败，请稍后重试。'
@@ -844,6 +890,19 @@ async function submitQuestion(nextQuestion?: string) {
     isLoading.value = false
     await nextTick()
     conversationEnd.value?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }
+}
+
+async function rateTurn(turn: ConversationTurn, rating: 'like' | 'dislike') {
+  if (!activeConversationId.value || turn.feedbackBusy || turn.feedback === rating) return
+  turn.feedbackBusy = true
+  try {
+    await submitTurnFeedback(activeConversationId.value, turn.id, rating)
+    turn.feedback = rating
+  } catch (feedbackError) {
+    error.value = feedbackError instanceof Error ? feedbackError.message : '反馈提交失败'
+  } finally {
+    turn.feedbackBusy = false
   }
 }
 
@@ -937,6 +996,7 @@ function switchWorkspace(next: Workspace) {
   if (next === 'agents') void loadAgentMesh()
   if (next === 'settings') void loadModelGateway()
   if (next === 'governance') void loadEvaluation()
+  if (next === 'runtime') void loadRuntimeControl()
 }
 
 function applyModelPreset() {
@@ -1206,6 +1266,7 @@ onMounted(async () => {
     loadPlatformData(),
     loadModelGateway(),
     loadEvaluation(),
+    loadRuntimeControl(),
     loadConversationIndex(true),
   ])
 })
@@ -1275,7 +1336,7 @@ onMounted(async () => {
           <X v-else :size="20" />
         </button>
         <div class="breadcrumb">
-          <span>AI数字化流程中心</span><ChevronRight :size="14" />
+          <span>数据中心</span><ChevronRight :size="14" />
           <strong>{{ workspace === 'settings' ? '系统设置' : navItems.find((item) => item.key === workspace)?.label }}</strong>
         </div>
         <div class="topbar-actions">
@@ -1337,9 +1398,9 @@ onMounted(async () => {
                 <div v-if="!turn.result && !turn.error" class="assistant-body live-response">
                   <div class="live-process">
                     <div class="process-steps" aria-label="思考与执行进度">
-                      <span :data-state="executionStageState(turn.stage, 'acquire')"><b>A</b>理解</span>
-                      <span :data-state="executionStageState(turn.stage, 'build')"><b>B</b>构建</span>
-                      <span :data-state="executionStageState(turn.stage, 'compute')"><b>C</b>计算</span>
+                      <span :data-state="executionStageState(turn.stage, 'acquire')"><b>1</b>识别</span>
+                      <span :data-state="executionStageState(turn.stage, 'build')"><b>2</b>建模</span>
+                      <span :data-state="executionStageState(turn.stage, 'compute')"><b>3</b>计算</span>
                     </div>
                     <p><span class="process-pulse"></span>{{ turn.stageMessage }}</p>
                   </div>
@@ -1369,6 +1430,10 @@ onMounted(async () => {
                   <div class="result-actions">
                     <button v-if="turn.result.evidence.length" @click="turn.evidenceOpen = !turn.evidenceOpen"><BookOpen :size="14" />{{ turn.evidenceOpen ? '收起证据' : `证据（${turn.result.evidence.length}）` }}</button>
                     <button @click="turn.executionOpen = !turn.executionOpen"><GitBranch :size="14" />{{ turn.executionOpen ? '收起过程' : '思考与执行' }}</button>
+                    <span class="feedback-actions" aria-label="评价回答">
+                      <button :class="{ selected: turn.feedback === 'like' }" :disabled="turn.feedbackBusy" title="回答有帮助" @click="rateTurn(turn, 'like')"><ThumbsUp :size="13" /></button>
+                      <button :class="{ selected: turn.feedback === 'dislike' }" :disabled="turn.feedbackBusy" title="回答需要改进" @click="rateTurn(turn, 'dislike')"><ThumbsDown :size="13" /></button>
+                    </span>
                     <code>{{ turn.result.trace_id }}</code>
                   </div>
 
@@ -1412,7 +1477,7 @@ onMounted(async () => {
 
       <section v-else-if="workspace === 'ontology'" class="workspace ontology-workspace">
         <div class="workspace-heading">
-          <div><span class="eyebrow">ONTOLOGY NEURAL NETWORK</span><h1>业务知识</h1><p>用业务语言管理对象、关系、指标、事件和权限，底层由 ONN 六元模型约束。</p></div>
+          <div><span class="eyebrow">ONTOLOGY &amp; SEMANTIC LAYER</span><h1>业务知识</h1><p>用业务语言管理对象、关系、指标、事件和权限，由统一本体语义模型约束。</p></div>
           <button class="primary-action" @click="builderOpen = true"><Sparkles :size="16" />新建业务域</button>
         </div>
         <div class="ontology-layout">
@@ -1452,7 +1517,7 @@ onMounted(async () => {
             <div v-if="builderStep === 1" class="builder-body"><h3>数据已经在哪里？</h3><p>选择已配置的数据源。事实数据默认留在原处，只读取结构和必要样本。</p><label class="builder-source">数据源<select v-model="builderSource"><option value="">请选择</option><option v-for="source in dataSources" :key="source.key" :value="source.key">{{ source.name }} · {{ source.connector_type }} · {{ source.status }}</option></select></label><p v-if="!dataSources.length" class="builder-hint">还没有数据源，请先到“数据接入”保存并测试连接。</p></div>
             <div v-else-if="builderStep === 2" class="builder-body"><h3>从一个有限场景开始</h3><p>系统会加载制造业模板，只生成当前场景真正需要的对象和指标。</p><div class="scenario-grid"><button class="selected" @click="builderStep = 3"><Boxes :size="18" /><strong>生产执行与 OEE</strong><small>订单、产线、设备、班次、停机</small></button><button @click="builderStep = 3"><ShieldCheck :size="18" /><strong>质量追溯</strong><small>批次、检验、缺陷、工艺参数</small></button><button @click="builderStep = 3"><Wrench :size="18" /><strong>设备运维</strong><small>设备、报警、工单、备件</small></button></div></div>
             <div v-else-if="builderStep === 3" class="builder-body"><h3>业务人员经常问什么？</h3><p>每行一个问题。系统将反向识别需要的对象、关系、指标和权限。</p><textarea v-model="builderQuestions" rows="8"></textarea></div>
-            <div v-else class="builder-body builder-result"><span class="builder-success"><Check :size="24" /></span><h3>ONN 候选已生成</h3><p>系统完成真实 Schema 发现与候选映射；补充指标口径后，点击发布即可自动评测并生效。</p><div class="builder-stats"><span><b>{{ builderScaffold.objects?.length ?? 0 }}</b>候选对象</span><span><b>{{ builderScaffold.attributes?.length ?? 0 }}</b>候选属性</span><span><b>{{ builderScaffold.relations?.length ?? 0 }}</b>候选关系</span></div><div class="builder-receipts"><span v-for="receipt in builderRun?.receipts ?? []" :key="receipt.sequence">{{ receipt.sequence }} · {{ receipt.summary }}</span></div></div>
+            <div v-else class="builder-body builder-result"><span class="builder-success"><Check :size="24" /></span><h3>语义候选已生成</h3><p>系统已保存 Schema 快照、提炼语义并送入治理评审；候选不会自动写入生产语义。</p><div class="builder-stats"><span><b>{{ builderScaffold.objects?.length ?? 0 }}</b>候选对象</span><span><b>{{ builderScaffold.attributes?.length ?? 0 }}</b>候选属性</span><span><b>{{ builderScaffold.relations?.length ?? 0 }}</b>候选关系</span></div><div class="builder-receipts"><span v-for="receipt in builderRun?.receipts ?? []" :key="receipt.sequence">{{ receipt.sequence }} · {{ receipt.summary }}</span></div></div>
             <p v-if="builderMessage" class="builder-message">{{ builderMessage }}</p><footer><button v-if="builderStep > 1 && builderStep < 4" @click="builderStep--">上一步</button><span></span><button v-if="builderStep === 1" class="primary-action" :disabled="!builderSource" @click="builderStep = 2">下一步</button><button v-else-if="builderStep === 3" class="primary-action" :disabled="builderLoading" @click="generateDomainCandidate"><Sparkles :size="14" />{{ builderLoading ? '生成中…' : '发现并生成候选' }}</button><button v-else-if="builderStep === 4" class="primary-action" @click="enterGovernance"><Check :size="14" />查看并发布</button></footer>
           </section>
         </div>
@@ -1518,7 +1583,7 @@ onMounted(async () => {
       </section>
 
       <section v-else-if="workspace === 'agents'" class="workspace agents-workspace">
-        <div class="workspace-heading"><div><span class="eyebrow">ONTOLOGY-CONSTRAINED AGENT MESH</span><h1>智能体网络</h1><p>按任务动态组网，所有智能体共享 FathomPlan、ONN 对象空间、权限与证据契约。</p></div><div class="mesh-heading-actions"><span class="mesh-state"><span class="pulse-dot"></span>{{ agentMesh?.agents.length ?? 0 }} 个内置智能体</span><button class="primary-action" :disabled="agentRunLoading" @click="executeActiveFlow"><Zap :size="15" />{{ agentRunLoading ? '执行中…' : '运行当前链路' }}</button></div></div>
+        <div class="workspace-heading"><div><span class="eyebrow">SEMANTIC AGENT MESH</span><h1>智能体网络</h1><p>按任务动态组网，所有智能体共享可信执行计划、本体对象空间、权限与证据契约。</p></div><div class="mesh-heading-actions"><span class="mesh-state"><span class="pulse-dot"></span>{{ agentMesh?.agents.length ?? 0 }} 个内置智能体</span><button class="primary-action" :disabled="agentRunLoading" @click="executeActiveFlow"><Zap :size="15" />{{ agentRunLoading ? '执行中…' : '运行当前链路' }}</button></div></div>
         <div v-if="agentRunMessage" class="settings-message"><CircleDot :size="14" />{{ agentRunMessage }}</div>
         <div class="mesh-principles"><span>最短可信链路</span><span>确定性计算</span><span>证据优先</span><span>自动评测发布</span></div>
         <section class="flow-card">
@@ -1581,11 +1646,76 @@ onMounted(async () => {
         </form>
       </section>
 
+      <section v-else-if="workspace === 'runtime'" class="workspace semantic-runtime-workspace">
+        <div class="workspace-heading">
+          <div><span class="eyebrow">GOVERNED SEMANTIC RUNTIME</span><h1>语义运行时</h1><p>把已发布指标解析到真实数据源，并让映射、策略、质量、血缘和执行收据在同一条链上可验证。</p></div>
+          <button class="primary-action" :disabled="runtimeBusy" @click="evaluateRuntime"><ShieldCheck :size="16" />{{ runtimeBusy ? '重放中…' : '运行外部黄金问题' }}</button>
+        </div>
+        <div v-if="runtimeMessage" class="settings-message"><CircleDot :size="14" />{{ runtimeMessage }}</div>
+        <div class="runtime-summary-grid">
+          <article><span>已发布映射</span><strong>{{ runtimeControl?.mappings.filter((item) => item.status === 'published').length ?? 0 }}</strong><small>语义 → 物理来源</small></article>
+          <article><span>执行收据</span><strong>{{ runtimeControl?.receipts.length ?? 0 }}</strong><small>计划 · 策略 · 结果哈希</small></article>
+          <article><span>受治理能力</span><strong>{{ runtimeControl?.capabilities.length ?? 0 }}</strong><small>MCP / Agent 可调用</small></article>
+          <article><span>黄金问题</span><strong>{{ runtimeControl?.goldenCases.length ?? 0 }}</strong><small>{{ runtimeEvaluation ? `${Math.round(runtimeEvaluation.accuracy * 100)}% 最近通过率` : '等待运行门禁' }}</small></article>
+        </div>
+        <div class="runtime-control-grid">
+          <section class="runtime-panel runtime-panel--wide">
+            <header><div><GitBranch :size="16" /><strong>物理映射</strong></div><span>版本化 · 可回滚 · Schema 兼容</span></header>
+            <div class="runtime-mapping-list">
+              <article v-for="mapping in runtimeControl?.mappings ?? []" :key="mapping.mapping_id">
+                <span class="runtime-state" :data-status="mapping.status">{{ mapping.status }}</span>
+                <div><strong>{{ mapping.metric_key }}</strong><small>{{ mapping.source_key }} · {{ String(mapping.definition.schema_name || 'default') }}.{{ mapping.definition.table_name }}</small></div>
+                <code>v{{ mapping.version }}</code>
+                <b :data-ok="mapping.compatibility.compatible !== false">{{ mapping.compatibility.compatible === false ? 'Schema 漂移' : '兼容' }}</b>
+              </article>
+            </div>
+          </section>
+          <section class="runtime-panel">
+            <header><div><Zap :size="16" /><strong>能力目录</strong></div><span>最小权限</span></header>
+            <div class="runtime-capability-list">
+              <article v-for="capability in runtimeControl?.capabilities ?? []" :key="capability.key"><div><strong>{{ capability.label }}</strong><small>{{ capability.key }} · {{ capability.minimum_role }}</small></div><span :data-effect="capability.side_effect">{{ capability.side_effect === 'none' ? '只读' : capability.approval_required ? '需审批' : '有副作用' }}</span></article>
+            </div>
+          </section>
+          <section class="runtime-panel">
+            <header><div><BookOpen :size="16" /><strong>需求证据</strong></div><span>业务意图可追踪</span></header>
+            <div class="runtime-requirement-list">
+              <article v-for="requirement in runtimeControl?.requirements.slice(0, 6) ?? []" :key="requirement.evidence_id"><div><strong>{{ requirement.title }}</strong><small>{{ requirement.owner }} · {{ requirement.definition.linked_assets?.join(' / ') || '待关联资产' }}</small></div><div class="runtime-evidence-meta"><span>{{ requirement.definition.review_status || 'candidate' }}</span><span>{{ requirement.definition.citations?.length || 0 }} 引用</span><b v-if="requirement.definition.conflicts?.length">{{ requirement.definition.conflicts.length }} 冲突</b></div></article>
+              <p v-if="!runtimeControl?.requirements.length">通过需求探索 API 生成候选，再由业务与语义负责人评审。</p>
+            </div>
+          </section>
+          <section class="runtime-panel">
+            <header><div><Network :size="16" /><strong>跨源对象身份</strong></div><span>统一对象 · 来源标识</span></header>
+            <div class="runtime-identity-list">
+              <article v-for="identity in runtimeControl?.identities.slice(0, 8) ?? []" :key="identity.identity_id"><div><strong>{{ identity.canonical_object_id }}</strong><small>{{ identity.owner }}</small></div><code>{{ identity.source_key }}:{{ identity.external_object_id }}</code></article>
+              <p v-if="!runtimeControl?.identities.length">为同一对象登记不同系统标识后，运行时会在物理计划中自动转换。</p>
+            </div>
+          </section>
+          <section class="runtime-panel">
+            <header><div><BellRing :size="16" /><strong>审批动作</strong></div><span>权限 · 幂等 · 回执</span></header>
+            <div class="runtime-action-list">
+              <article v-for="action in runtimeControl?.actions.slice(0, 8) ?? []" :key="action.run_id"><div><strong>{{ action.title }}</strong><small>{{ action.capability_key }} · {{ action.object_id }}</small></div><b>{{ action.status }}</b></article>
+              <p v-if="!runtimeControl?.actions.length">审批通过的 Case 与治理通知会在这里保留幂等执行记录。</p>
+            </div>
+          </section>
+          <section class="runtime-panel runtime-panel--wide">
+            <header><div><ShieldCheck :size="16" /><strong>最近执行收据</strong></div><span>只保存脱敏计划和结果哈希</span></header>
+            <div class="runtime-receipt-list">
+              <article v-for="receipt in runtimeControl?.receipts.slice(0, 12) ?? []" :key="receipt.receipt_id">
+                <span class="status-indicator" :data-status="receipt.status === 'completed' ? 'online' : 'offline'"></span>
+                <div><strong>{{ receipt.resource }}</strong><small>{{ receipt.source_key || '未选择来源' }} · {{ receipt.mapping_id || '无映射' }}</small></div>
+                <span>{{ receipt.row_count }} 行</span><code>{{ receipt.duration_ms.toFixed(1) }} ms</code><b>{{ receipt.status }}</b>
+              </article>
+              <p v-if="!runtimeControl?.receipts.length">执行真实语义查询后，这里会显示策略、映射、质量和结果凭证。</p>
+            </div>
+          </section>
+        </div>
+      </section>
+
       <section v-else-if="workspace === 'studio'" class="workspace studio-workspace">
         <div class="workspace-heading"><div><span class="eyebrow">ENGINEERING TOOLKIT</span><h1>工程工具</h1><p>写 SQL、编排数据、扩展逻辑；每一步都可预览、校验、发布和追溯。</p></div><span v-if="toolMessage" class="tool-message"><Check :size="14" />{{ toolMessage }}</span></div>
         <div class="studio-capabilities">
           <button :class="{ active: activeStudioTool === 'sql' }" @click="activeStudioTool = 'sql'"><Braces :size="18" /><div><strong>SQL 开发</strong><span>校验 · 预览 · 版本 · 发布</span></div></button>
-          <button :class="{ active: activeStudioTool === 'pipeline' }" @click="activeStudioTool = 'pipeline'"><Workflow :size="18" /><div><strong>数据管道</strong><span>转换 · 质量 · ONN 映射</span></div></button>
+          <button :class="{ active: activeStudioTool === 'pipeline' }" @click="activeStudioTool = 'pipeline'"><Workflow :size="18" /><div><strong>数据管道</strong><span>转换 · 质量 · 语义映射</span></div></button>
           <button :class="{ active: activeStudioTool === 'python' }" @click="activeStudioTool = 'python'"><FileCode2 :size="18" /><div><strong>Python 扩展</strong><span>隔离运行 · 限时 · 日志</span></div></button>
           <button :class="{ active: activeStudioTool === 'transfer' }" @click="activeStudioTool = 'transfer'"><HardDrive :size="18" /><div><strong>迁移与恢复</strong><span>导入导出 · 备份 · 恢复</span></div></button>
         </div>
@@ -1597,7 +1727,7 @@ onMounted(async () => {
             <div class="form-row"><label>管道标识<input v-model="pipelineKey" /></label><label>名称<input v-model="pipelineLabel" /></label></div>
             <label>事实源<select v-model="pipelineSource"><option value="">选择数据源</option><option v-for="source in dataSources.filter((item) => ['file', 'sqlite', 'duckdb'].includes(item.connector_type))" :key="source.key" :value="source.key">{{ source.name }} · {{ source.connector_type }}</option></select></label>
             <label>转换与质量步骤 JSON<textarea v-model="pipelineStepsText" rows="8" spellcheck="false"></textarea></label>
-            <div class="pipeline-actions"><small>支持重命名、类型转换、过滤、派生、去重、质量检查和 ONN 映射。</small><div><button @click="persistPipeline(false)"><Save :size="14" />保存草稿</button><button class="primary-action" :disabled="pipelineRunning" @click="runPipelinePreview"><Play :size="15" />{{ pipelineRunning ? '执行中…' : '运行预览' }}</button><button @click="persistPipeline(true)"><ShieldCheck :size="14" />发布</button></div></div>
+            <div class="pipeline-actions"><small>支持重命名、类型转换、过滤、派生、去重、质量检查和语义映射。</small><div><button @click="persistPipeline(false)"><Save :size="14" />保存草稿</button><button class="primary-action" :disabled="pipelineRunning" @click="runPipelinePreview"><Play :size="15" />{{ pipelineRunning ? '执行中…' : '运行预览' }}</button><button @click="persistPipeline(true)"><ShieldCheck :size="14" />发布</button></div></div>
           </div>
           <div v-if="pipelineResult" class="pipeline-result">
             <div class="pipeline-result-summary"><strong>{{ pipelineResult.status === 'passed' ? '质量门禁通过' : '质量门禁失败' }}</strong><span>{{ pipelineResult.row_count }} 行 · {{ pipelineResult.columns.length }} 列 · {{ pipelineResult.limits.memory }} · {{ pipelineResult.run_id }}</span></div>
@@ -1650,9 +1780,9 @@ onMounted(async () => {
       </section>
 
       <section v-else-if="workspace === 'governance'" class="workspace governance-workspace">
-        <div class="workspace-heading"><div><span class="eyebrow">CONTROLLED EVOLUTION</span><h1>学习与治理</h1><p>候选生成后直接发布；系统自动完成质量评测并保留回滚点。</p></div></div>
+        <div class="workspace-heading"><div><span class="eyebrow">SEMANTIC GOVERNANCE</span><h1>学习与治理</h1><p>候选生成后直接发布；系统自动完成质量评测并保留回滚点。</p></div></div>
         <div v-if="governanceMessage" class="settings-message"><Check :size="14" />{{ governanceMessage }}</div>
-        <div class="governance-summary"><article><span>待发布建议</span><strong>{{ String(pendingChangeCount).padStart(2, '0') }}</strong><small>点击即可自动评测并发布</small></article><article><span>语义覆盖率</span><strong>87%</strong><small>生产执行域</small></article><article><span>最近评测</span><strong>{{ evaluationReport ? `${evaluationReport.accuracy_percent}%` : '待运行' }}</strong><small v-if="evaluationReport">基线 {{ evaluationReport.correct }} / {{ evaluationReport.total }} · 门槛 ≥99%</small><small v-else>发布时自动运行</small></article><article><span>失败样本</span><strong>{{ evaluationReport?.failures.length ?? '—' }}</strong><small>{{ evaluationReport?.passed ? '允许直接发布' : '失败时自动拦截' }}</small></article></div>
+        <div class="governance-summary"><article><span>待发布建议</span><strong>{{ String(pendingChangeCount).padStart(2, '0') }}</strong><small>点击即可自动评测并发布</small></article><article><span>语义覆盖率</span><strong>87%</strong><small>生产执行域</small></article><article><span>最近评测</span><strong>{{ evaluationReport ? `${evaluationReport.accuracy_percent}%` : '待运行' }}</strong><small v-if="evaluationReport">基线 {{ evaluationReport.correct }} / {{ evaluationReport.total }} · 门槛 ≥99%</small><small v-else>发布时自动运行</small></article><article><span>失败样本</span><strong>{{ evaluationReport?.failures?.length ?? '—' }}</strong><small>{{ evaluationReport?.passed ? '允许直接发布' : '失败时自动拦截' }}</small></article></div>
         <p v-if="evaluationReport" class="governance-scope-note">{{ evaluationReport.scope_note }} · {{ evaluationReport.semantic_version }}</p>
         <div v-if="evaluationReport?.gates" class="evaluation-gates"><span v-for="(gate, key) in evaluationReport.gates" :key="key" :data-passed="gate.passed"><Check :size="12" />{{ evaluationGateLabels[key] ?? key }} · {{ gate.total }} 项</span></div>
         <section class="golden-set-card">

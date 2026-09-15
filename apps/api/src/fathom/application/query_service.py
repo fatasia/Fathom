@@ -10,16 +10,18 @@ from fathom.adapters.storage.database import (
     MetricObservationRecord,
     ObjectInstanceRecord,
     QueryTraceRecord,
-    RelationEdgeRecord,
 )
 from fathom.adapters.storage.semantic_repository import SqlSemanticRepository
+from fathom.application.diagnosis import DiagnosisService
 from fathom.application.knowledge import KnowledgeSearchInput, KnowledgeService
+from fathom.application.mql import MqlEngine, MqlValidationError
 from fathom.domains.query.models import (
     AbcStage,
     AskRequest,
     AskResponse,
     Evidence,
     FathomPlan,
+    MqlQuery,
     PlanAnchor,
     PlanStatus,
     SemanticBinding,
@@ -35,6 +37,20 @@ class TextModelGateway(Protocol):
         role: str,
         prompt: str,
         image_data_urls: list[str] | None = None,
+    ) -> dict[str, object]: ...
+
+
+class SemanticRuntime(Protocol):
+    def has_mapping(self, metric_key: str) -> bool: ...
+
+    def execute(
+        self,
+        query: MqlQuery,
+        *,
+        principal: str,
+        role: str,
+        authorized_objects: set[str] | None,
+        trace_id: str | None = None,
     ) -> dict[str, object]: ...
 
 
@@ -136,6 +152,17 @@ class SemanticPlanner:
             binding=SemanticBinding(
                 metric=matched_metric.key,
                 dimensions=["production_line", "day"],
+                time_range=time_range,
+                comparison="previous_period" if is_diagnostic else None,
+            ),
+            mql=MqlQuery(
+                metric=matched_metric.key,
+                object_ids=[object_id],
+                dimensions=[
+                    dimension
+                    for dimension in ("production_line", "day")
+                    if dimension in matched_metric.dimensions
+                ],
                 time_range=time_range,
                 comparison="previous_period" if is_diagnostic else None,
             ),
@@ -292,12 +319,17 @@ class QueryService:
         semantic_repository: SqlSemanticRepository,
         knowledge_service: KnowledgeService | None = None,
         model_gateway: TextModelGateway | None = None,
+        diagnosis_service: DiagnosisService | None = None,
+        semantic_runtime: SemanticRuntime | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = semantic_repository
         self._planner = SemanticPlanner(session_factory, semantic_repository)
+        self._mql = MqlEngine(session_factory, semantic_repository)
         self._knowledge_service = knowledge_service
         self._model_gateway = model_gateway
+        self._diagnosis = diagnosis_service or DiagnosisService(session_factory)
+        self._runtime = semantic_runtime
 
     def plan(self, request: AskRequest) -> FathomPlan:
         """Build a validated plan without executing data access or writing a trace."""
@@ -307,6 +339,9 @@ class QueryService:
         self,
         request: AskRequest,
         authorized_objects: set[str] | None = None,
+        *,
+        principal: str = "local",
+        role: str = "admin",
     ) -> AskResponse:
         trace_id = f"tr_{uuid4().hex[:16]}"
         semantic_version = request.semantic_version or "manufacturing.execution@0.1.0"
@@ -369,44 +404,28 @@ class QueryService:
             return response
 
         object_id = next(anchor.key for anchor in plan.anchors if anchor.kind == "object")
-        if authorized_objects is not None and object_id not in authorized_objects:
-            raise PermissionError(f"无权访问业务对象：{object_id}")
-        with self._session_factory() as session:
-            object_record = session.get(ObjectInstanceRecord, object_id)
-            related_ids = session.scalars(
-                select(RelationEdgeRecord.target_id).where(
-                    RelationEdgeRecord.source_id == object_id
-                )
-            ).all()
-            event_scope = [object_id, *related_ids]
-            observation_query = select(MetricObservationRecord).where(
-                MetricObservationRecord.metric_key == plan.binding.metric,
-                MetricObservationRecord.object_id == object_id,
+        if plan.mql is None:
+            raise MqlValidationError("计划缺少 MQL，执行已阻断")
+        execution = (
+            self._runtime.execute(
+                plan.mql,
+                principal=principal,
+                role=role,
+                authorized_objects=authorized_objects,
+                trace_id=trace_id,
             )
-            range_end = self._range_end(plan.binding.time_range)
-            if range_end is not None:
-                observation_query = observation_query.where(
-                    MetricObservationRecord.observed_at < range_end
-                )
-            observations = session.scalars(
-                observation_query
-                .order_by(MetricObservationRecord.observed_at.desc())
-                .limit(2)
-            ).all()
-            events = session.scalars(
-                select(EventRecord)
-                .where(
-                    EventRecord.object_id.in_(event_scope),
-                    EventRecord.occurred_at >= datetime.now(UTC) - timedelta(days=4),
-                )
-                .order_by(EventRecord.duration_minutes.desc())
-            ).all()
-
-        asset = next(
-            asset for asset in self._repository.list_assets() if asset.key == plan.binding.metric
+            if self._runtime and self._runtime.has_mapping(plan.mql.metric)
+            else self._mql.execute(plan.mql, authorized_objects)
         )
+        object_record = execution["object"]
+        observations = execution["observations"]
+        events = execution["events"]
+        asset = execution["asset"]
         object_label = object_record.label if object_record else object_id
-        source_key = object_record.source_key if object_record else "unknown"
+        source_key = (
+            execution.get("mapping", {}).get("source_key")
+            or (object_record.source_key if object_record else "unknown")
+        )
         if not observations:
             response = AskResponse(
                 status="no_data",
@@ -415,7 +434,14 @@ class QueryService:
                     f"但在请求的时间范围内没有真实观测数据。系统没有使用示例值补齐结果。"
                 ),
                 plan=plan,
-                data={"columns": [], "rows": []},
+                data={
+                    "columns": [],
+                    "rows": [],
+                    "mql": plan.mql.model_dump(mode="json"),
+                    "compiled_query": execution["compiled"],
+                    "execution_receipt": execution.get("receipt"),
+                    "quality": execution.get("quality"),
+                },
                 chart_spec={"type": "none"},
                 evidence=[
                     Evidence(
@@ -423,20 +449,38 @@ class QueryService:
                         title=f"{asset.label} · 已发布口径",
                         reference=f"semantic://{asset.key}@0.1.0",
                         detail=asset.expression or asset.description,
-                    )
+                    ),
+                    *(
+                        [
+                            Evidence(
+                                type="execution_receipt",
+                                title="外部执行收据",
+                                reference=(
+                                    f"receipt://{execution['receipt']['receipt_id']}"
+                                ),
+                                detail=(
+                                    f"映射 {execution['receipt']['mapping_id']} · "
+                                    f"策略 {execution['receipt']['policy_decision_id']}"
+                                ),
+                            )
+                        ]
+                        if execution.get("receipt")
+                        else []
+                    ),
                 ],
                 quality_warnings=["请求范围内没有可验证的真实观测值"],
                 suggested_followups=["检查数据源同步状态", "查看该指标的数据映射"],
                 trace_id=trace_id,
                 semantic_version=semantic_version,
                 data_freshness=datetime.now(UTC).isoformat(),
+                verification_status="verified_no_data",
             )
             self._save_trace(trace_id, request.question, plan, response.status)
             return response
 
         current = observations[0]
         previous = observations[1] if len(observations) > 1 else None
-        delta = current.value - previous.value if previous else 0.0
+        delta = current.value - previous.value if previous else None
         relevant_events = [event for event in events if event.payload.get("line") == object_id][:4]
         answer = self._compose_answer(
             object_label,
@@ -454,6 +498,16 @@ class QueryService:
             for observation in reversed(observations)
         ]
         freshness = max(observation.observed_at for observation in observations).isoformat()
+        diagnosis = None
+        if plan.intent == "diagnose_metric":
+            diagnosis = self._diagnosis.analyze(
+                trace_id=trace_id,
+                asset=asset,
+                object_id=object_id,
+                observations=observations,
+                events=events,
+            )
+            answer = f"{answer} {diagnosis['summary']}"
         response = AskResponse(
             status="completed",
             answer=answer,
@@ -463,7 +517,7 @@ class QueryService:
                 "rows": rows,
                 "current": current.value,
                 "previous": previous.value if previous else None,
-                "delta": round(delta, 2),
+                "delta": round(delta, 2) if delta is not None else None,
                 "unit": asset.unit,
                 "contributors": [
                     {
@@ -473,6 +527,12 @@ class QueryService:
                     }
                     for event in relevant_events
                 ],
+                "mql": plan.mql.model_dump(mode="json"),
+                "compiled_query": execution["compiled"],
+                "execution_receipt": execution.get("receipt"),
+                "quality": execution.get("quality"),
+                "route_attempts": execution.get("route_attempts", []),
+                "diagnosis": diagnosis,
             },
             chart_spec={
                 "type": "comparison_with_contributors",
@@ -491,6 +551,22 @@ class QueryService:
                     title="指标观测值",
                     reference=f"source://{source_key}",
                     detail=f"对象 {object_label}，数据时间 {freshness}",
+                ),
+                *(
+                    [
+                        Evidence(
+                            type="execution_receipt",
+                            title="受治理外部执行收据",
+                            reference=f"receipt://{execution['receipt']['receipt_id']}",
+                            detail=(
+                                f"映射 {execution['receipt']['mapping_id']} · "
+                                f"策略 {execution['receipt']['policy_decision_id']} · "
+                                f"结果哈希 {execution['receipt']['result_hash']}"
+                            ),
+                        )
+                    ]
+                    if execution.get("receipt")
+                    else []
                 ),
                 *[
                     Evidence(
@@ -511,6 +587,8 @@ class QueryService:
             trace_id=trace_id,
             semantic_version=semantic_version,
             data_freshness=freshness,
+            verification_status=str(execution.get("verification_status", "verified")),
+            analysis_run_id=(diagnosis["analysis_run_id"] if diagnosis else None),
         )
         self._save_trace(trace_id, request.question, plan, response.status)
         return response
@@ -608,17 +686,17 @@ class QueryService:
             ]
         elif intent == "greeting":
             answer = (
-                "你好，我是 FATHOM 工业数据助手。你可以直接问企业指标、业务定义、"
+                "你好，我是 FATHOM 数据语义助手。你可以直接问业务指标、口径定义、"
                 "分析方法或平台使用问题，不需要先选择对象或填写技术参数。"
             )
         elif intent == "help":
             answer = (
-                "我是 FATHOM 工业数据助手。我能基于已接入的数据回答指标与运行问题，"
+                "我是 FATHOM 数据语义助手。我能基于已接入的数据回答指标与运行问题，"
                 "解释业务口径和知识文档，并给出可追溯证据；直接输入自然语言问题即可。"
             )
         else:
             answer = self._invoke_general_model(request) or (
-                "我可以回答工业数据、指标定义、分析方法和平台使用问题。"
+                "我可以回答数据、指标定义、分析方法和平台使用问题。"
                 "涉及本企业的实时数值时，需要先接入真实数据源。"
             )
 
@@ -691,7 +769,7 @@ class QueryService:
         )
         images = [item.data_url for item in request.attachments if item.data_url]
         prompt = (
-            "你是渊渟 FATHOM 的工业数据助手。请直接、自然、简洁地回答用户问题。"
+            "你是渊渟 FATHOM 的数据语义助手。请直接、自然、简洁地回答用户问题。"
             "可以回答通用知识、方法和使用帮助；不得编造任何企业专属数值、状态或事实。"
             "如果问题需要企业实时数据，应明确说明需要先接入并验证数据。\n\n"
             f"用户问题：{request.question}"
@@ -788,11 +866,13 @@ class QueryService:
         object_label: str,
         asset: SemanticAsset,
         current: float,
-        delta: float,
+        delta: float | None,
         events: list[EventRecord],
         intent: str,
     ) -> str:
         unit = asset.unit or ""
+        if delta is None:
+            return f"{object_label}{asset.label}为 {current:.1f}{unit}，暂无可比上一期数据。"
         direction = "下降" if delta < 0 else "上升"
         summary = (
             f"{object_label}{asset.label}为 {current:.1f}{unit}，"

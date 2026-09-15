@@ -44,7 +44,7 @@ def _check_origin(request: Request) -> None:
 @router.get("/api/v1/agent-gateway/capabilities")
 def agent_gateway_capabilities() -> dict[str, Any]:
     return {
-        "positioning": "platform-neutral industrial semantic and agent access gateway",
+        "positioning": "platform-neutral semantic and agent access gateway",
         "protocols": [
             {"key": "openapi", "version": "3.1", "status": "ready"},
             {
@@ -83,8 +83,8 @@ def agent_gateway_capabilities() -> dict[str, Any]:
 def a2a_agent_card(request: Request) -> dict[str, Any]:
     return {
         "protocolVersion": "0.3.0",
-        "name": "渊渟 FATHOM Industrial Semantic Agent",
-        "description": "受 ONN 与 ABC 约束的工业问数、语义检索和证据服务。",
+        "name": "渊渟 FATHOM Semantic Agent",
+        "description": "受语义层与执行契约约束的业务问数、语义检索和证据服务。",
         "url": str(request.base_url).rstrip("/") + "/a2a",
         "preferredTransport": "JSONRPC",
         "capabilities": {"streaming": False, "pushNotifications": False},
@@ -92,10 +92,10 @@ def a2a_agent_card(request: Request) -> dict[str, Any]:
         "defaultOutputModes": ["text/plain", "application/json"],
         "skills": [
             {
-                "id": "industrial-semantic-query",
-                "name": "工业语义问数",
-                "description": "查询认证指标并返回 ABC 计划、证据和 trace_id。",
-                "tags": ["industrial", "ontology", "analytics", "evidence"],
+                "id": "semantic-query",
+                "name": "语义问数",
+                "description": "查询已认证指标并返回执行计划、证据和 trace_id。",
+                "tags": ["semantics", "ontology", "analytics", "evidence"],
                 "examples": ["为什么一号线昨天订单达成率下降？"],
             }
         ],
@@ -131,6 +131,8 @@ def a2a_endpoint(payload: JsonRpcRequest, request: Request) -> dict[str, Any]:
                 semantic_version=message.get("metadata", {}).get("semanticVersion"),
             ),
             getattr(request.state, "authorized_objects", None),
+            principal=str(getattr(request.state, "principal", "local")),
+            role=str(getattr(request.state, "role", "admin")),
         )
     except PermissionError as error:
         return _rpc_error(payload.id, -32003, str(error))
@@ -207,7 +209,7 @@ def mcp_endpoint(payload: JsonRpcRequest, request: Request) -> Response | dict[s
     if payload.method == "ping":
         return _rpc_result(payload.id, {})
     if payload.method == "tools/list":
-        return _rpc_result(payload.id, {"tools": _mcp_tools()})
+        return _rpc_result(payload.id, {"tools": _mcp_tools(request)})
     if payload.method == "tools/call":
         return _call_mcp_tool(payload, request)
     if payload.method == "resources/list":
@@ -217,7 +219,7 @@ def mcp_endpoint(payload: JsonRpcRequest, request: Request) -> Response | dict[s
                 "resources": [
                     {
                         "uri": "fathom://semantics/overview",
-                        "name": "FATHOM ONN semantic overview",
+                        "name": "FATHOM semantic overview",
                         "description": (
                             "Published objects, relations, attributes, metrics, "
                             "events and policies."
@@ -247,12 +249,12 @@ def mcp_endpoint(payload: JsonRpcRequest, request: Request) -> Response | dict[s
     return _rpc_error(payload.id, -32601, f"Method not found: {payload.method}")
 
 
-def _mcp_tools() -> list[dict[str, Any]]:
-    return [
+def _mcp_tools(request: Request) -> list[dict[str, Any]]:
+    tools = [
         {
             "name": "fathom.ask_data",
-            "title": "FATHOM 工业语义问数",
-            "description": "在 ONN 与 ABC 约束下计算认证指标并返回证据。",
+            "title": "FATHOM 语义问数",
+            "description": "在已发布语义契约约束下计算认证指标并返回证据。",
             "inputSchema": {
                 "type": "object",
                 "required": ["question"],
@@ -277,7 +279,7 @@ def _mcp_tools() -> list[dict[str, Any]]:
         },
         {
             "name": "fathom.get_object_context",
-            "title": "读取 ONN 对象上下文",
+            "title": "读取对象上下文",
             "description": "读取对象实例、属性和有效关系，供 Agent 与业务应用消费。",
             "inputSchema": {
                 "type": "object",
@@ -286,6 +288,24 @@ def _mcp_tools() -> list[dict[str, Any]]:
             },
         },
     ]
+    registry = getattr(request.app.state, "capability_registry", None)
+    if registry is not None:
+        for capability in registry.list(published_only=True):
+            tools.append(
+                {
+                    "name": f"fathom.runtime.{capability['key']}",
+                    "title": capability["label"],
+                    "description": capability["definition"].get("description", ""),
+                    "inputSchema": capability["definition"].get(
+                        "input_schema", {"type": "object"}
+                    ),
+                    "annotations": {
+                        "readOnlyHint": capability["side_effect"] == "none",
+                        "destructiveHint": capability["side_effect"] == "external",
+                    },
+                }
+            )
+    return tools
 
 
 def _call_mcp_tool(payload: JsonRpcRequest, request: Request) -> dict[str, Any]:
@@ -298,6 +318,8 @@ def _call_mcp_tool(payload: JsonRpcRequest, request: Request) -> dict[str, Any]:
             result = request.app.state.query_service.ask(
                 AskRequest.model_validate(arguments),
                 getattr(request.state, "authorized_objects", None),
+                principal=str(getattr(request.state, "principal", "local")),
+                role=str(getattr(request.state, "role", "admin")),
             )
             structured = result.model_dump(mode="json")
         elif name == "fathom.search_semantics":
@@ -317,6 +339,18 @@ def _call_mcp_tool(payload: JsonRpcRequest, request: Request) -> dict[str, Any]:
             if allowed is not None and object_id not in allowed:
                 raise PermissionError(f"无权访问业务对象：{object_id}")
             structured = request.app.state.object_context_service.get_context(object_id)
+        elif isinstance(name, str) and name.startswith("fathom.runtime."):
+            capability_key = name.removeprefix("fathom.runtime.")
+            capability_arguments = dict(arguments)
+            approval_token = capability_arguments.pop("approval_token", None)
+            structured = request.app.state.capability_registry.invoke(
+                capability_key,
+                capability_arguments,
+                principal=str(getattr(request.state, "principal", "local")),
+                role=str(getattr(request.state, "role", "admin")),
+                authorized_objects=getattr(request.state, "authorized_objects", None),
+                approval_token=(str(approval_token) if approval_token else None),
+            )
         else:
             return _rpc_error(payload.id, -32602, f"Unknown tool: {name}")
     except PermissionError as error:

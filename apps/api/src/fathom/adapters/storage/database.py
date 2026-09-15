@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fathom.config import Settings
@@ -11,9 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     create_engine,
-    delete,
     inspect,
-    select,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -88,6 +86,30 @@ class QueryTraceRecord(Base):
     status: Mapped[str] = mapped_column(String(32))
 
 
+class SchemaSnapshotRecord(Base):
+    __tablename__ = "schema_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_key: Mapped[str] = mapped_column(String(160), index=True)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    schema_document: Mapped[dict] = mapped_column(JSON)
+    diff: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class ExtractionRunRecord(Base):
+    __tablename__ = "extraction_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    trigger_type: Mapped[str] = mapped_column(String(32), index=True)
+    source_key: Mapped[str] = mapped_column(String(160), index=True)
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ConversationRecord(Base):
     __tablename__ = "conversations"
 
@@ -106,6 +128,46 @@ class ConversationTurnRecord(Base):
     question: Mapped[str] = mapped_column(String(1000))
     attachments: Mapped[list] = mapped_column(JSON, default=list)
     response: Mapped[dict] = mapped_column(JSON)
+
+
+class FeedbackRecord(Base):
+    __tablename__ = "feedback"
+
+    feedback_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    external_message_id: Mapped[str | None] = mapped_column(
+        String(160), nullable=True, index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    rating: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    content: Mapped[str] = mapped_column(String(2000), default="")
+    category: Mapped[str] = mapped_column(String(64), default="general", index=True)
+    sentiment: Mapped[str] = mapped_column(String(32), default="neutral", index=True)
+    emotion: Mapped[str] = mapped_column(String(32), default="neutral")
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    semantic_version: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    mql: Mapped[dict] = mapped_column(JSON, default=dict)
+    result_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    resolution: Mapped[str] = mapped_column(String(2000), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class ExternalMessageLinkRecord(Base):
+    __tablename__ = "external_message_links"
+
+    link_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    app_id: Mapped[str] = mapped_column(String(160), index=True)
+    external_conversation_id: Mapped[str] = mapped_column(String(160), index=True)
+    external_message_id: Mapped[str] = mapped_column(String(160), index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class AuditEventRecord(Base):
@@ -162,6 +224,21 @@ class AgentRunRecord(Base):
     status: Mapped[str] = mapped_column(String(32), index=True)
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result: Mapped[dict] = mapped_column(JSON)
+
+
+class AnalysisRunRecord(Base):
+    __tablename__ = "analysis_runs"
+
+    analysis_run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    trace_id: Mapped[str] = mapped_column(String(64), index=True)
+    analysis_type: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    metric_key: Mapped[str] = mapped_column(String(160), index=True)
+    object_id: Mapped[str] = mapped_column(String(160), index=True)
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class SqlTemplateRecord(Base):
@@ -342,192 +419,6 @@ def create_session_factory(app_settings: Settings) -> sessionmaker[Session]:
                     )
                 )
     return sessionmaker(engine, expire_on_commit=False)
-
-
-def seed_demo_observations(session_factory: sessionmaker[Session]) -> None:
-    with session_factory() as session:
-        existing = session.scalar(select(MetricObservationRecord.id).limit(1))
-        if existing is not None:
-            return
-
-        today = datetime.now(UTC).replace(hour=8, minute=0, second=0, microsecond=0)
-        yesterday = today - timedelta(days=1)
-        previous = today - timedelta(days=2)
-        observations = [
-            ("order_fulfillment_rate", "line_01", previous, 93.6),
-            ("order_fulfillment_rate", "line_01", yesterday, 87.4),
-            ("oee", "line_01", previous, 84.7),
-            ("oee", "line_01", yesterday, 78.2),
-            ("actual_output", "line_01", previous, 936.0),
-            ("actual_output", "line_01", yesterday, 874.0),
-            ("planned_output", "line_01", previous, 1000.0),
-            ("planned_output", "line_01", yesterday, 1000.0),
-            ("downtime_minutes", "line_01", previous, 62.0),
-            ("downtime_minutes", "line_01", yesterday, 138.0),
-        ]
-        session.add_all(
-            MetricObservationRecord(
-                metric_key=key,
-                object_id=object_id,
-                observed_at=observed_at,
-                value=value,
-                dimensions={"plant": "east_plant", "shift": "all"},
-            )
-            for key, object_id, observed_at, value in observations
-        )
-        session.add_all(
-            [
-                EventRecord(
-                    event_type="unplanned_downtime",
-                    object_id="equipment_press_01",
-                    occurred_at=yesterday + timedelta(hours=2),
-                    duration_minutes=47,
-                    payload={"reason": "液压压力异常", "line": "line_01"},
-                ),
-                EventRecord(
-                    event_type="unplanned_downtime",
-                    object_id="equipment_robot_03",
-                    occurred_at=yesterday + timedelta(hours=6),
-                    duration_minutes=31,
-                    payload={"reason": "视觉定位失败", "line": "line_01"},
-                ),
-                EventRecord(
-                    event_type="changeover_delay",
-                    object_id="line_01",
-                    occurred_at=yesterday + timedelta(hours=10),
-                    duration_minutes=22,
-                    payload={"reason": "换型物料晚到", "line": "line_01"},
-                ),
-            ]
-        )
-        session.commit()
-
-
-def seed_demo_object_instances(session_factory: sessionmaker[Session]) -> None:
-    with session_factory() as session:
-        if session.get(ObjectInstanceRecord, "line_01") is not None:
-            return
-        now = datetime.now(UTC)
-        session.add_all(
-            [
-                ObjectInstanceRecord(
-                    object_id="east_plant",
-                    object_type="plant",
-                    label="华东工厂",
-                    source_key="demo.manufacturing",
-                    attributes={"region": "华东", "timezone": "Asia/Shanghai"},
-                    updated_at=now,
-                ),
-                ObjectInstanceRecord(
-                    object_id="line_01",
-                    object_type="production_line",
-                    label="一号生产线",
-                    source_key="demo.manufacturing",
-                    attributes={"line_code": "L01", "mode": "mixed_model"},
-                    updated_at=now,
-                ),
-                ObjectInstanceRecord(
-                    object_id="equipment_press_01",
-                    object_type="equipment",
-                    label="一号液压机",
-                    source_key="demo.manufacturing",
-                    attributes={"category": "hydraulic_press", "criticality": "A"},
-                    updated_at=now,
-                ),
-                ObjectInstanceRecord(
-                    object_id="equipment_robot_03",
-                    object_type="equipment",
-                    label="三号视觉机器人",
-                    source_key="demo.manufacturing",
-                    attributes={"category": "vision_robot", "criticality": "B"},
-                    updated_at=now,
-                ),
-                ObjectInstanceRecord(
-                    object_id="work_order_240820",
-                    object_type="work_order",
-                    label="工单 WO-240820",
-                    source_key="demo.manufacturing",
-                    attributes={"planned_quantity": 1000, "status": "in_progress"},
-                    updated_at=now,
-                ),
-            ]
-        )
-        session.add_all(
-            [
-                RelationEdgeRecord(
-                    relation_key="plant_contains_line",
-                    source_id="east_plant",
-                    target_id="line_01",
-                    valid_from=now,
-                ),
-                RelationEdgeRecord(
-                    relation_key="line_contains_equipment",
-                    source_id="line_01",
-                    target_id="equipment_press_01",
-                    valid_from=now,
-                ),
-                RelationEdgeRecord(
-                    relation_key="line_contains_equipment",
-                    source_id="line_01",
-                    target_id="equipment_robot_03",
-                    valid_from=now,
-                ),
-                RelationEdgeRecord(
-                    relation_key="work_order_runs_on_line",
-                    source_id="work_order_240820",
-                    target_id="line_01",
-                    valid_from=now,
-                ),
-            ]
-        )
-        session.commit()
-
-
-def remove_legacy_demo_data(session_factory: sessionmaker[Session]) -> int:
-    """Remove facts created by early FATHOM demo bootstrapping.
-
-    Semantic contracts and metric definitions are intentionally preserved. Only
-    instance data carrying the legacy ``demo.manufacturing`` source marker and
-    facts attached to those instances are removed.
-    """
-    with session_factory() as session:
-        demo_object_ids = set(
-            session.scalars(
-                select(ObjectInstanceRecord.object_id).where(
-                    ObjectInstanceRecord.source_key == "demo.manufacturing"
-                )
-            ).all()
-        )
-        if not demo_object_ids:
-            return 0
-
-        trace_ids = []
-        for trace in session.scalars(select(QueryTraceRecord)).all():
-            anchors = trace.plan.get("anchors", []) if isinstance(trace.plan, dict) else []
-            if any(anchor.get("key") in demo_object_ids for anchor in anchors):
-                trace_ids.append(trace.trace_id)
-
-        session.execute(
-            delete(RelationEdgeRecord).where(
-                (RelationEdgeRecord.source_id.in_(demo_object_ids))
-                | (RelationEdgeRecord.target_id.in_(demo_object_ids))
-            )
-        )
-        session.execute(
-            delete(MetricObservationRecord).where(
-                MetricObservationRecord.object_id.in_(demo_object_ids)
-            )
-        )
-        session.execute(delete(EventRecord).where(EventRecord.object_id.in_(demo_object_ids)))
-        if trace_ids:
-            session.execute(delete(QueryTraceRecord).where(QueryTraceRecord.trace_id.in_(trace_ids)))
-        session.execute(
-            delete(ObjectInstanceRecord).where(
-                ObjectInstanceRecord.source_key == "demo.manufacturing"
-            )
-        )
-        session.commit()
-        return len(demo_object_ids)
 
 
 def seed_sql_templates(session_factory: sessionmaker[Session]) -> None:

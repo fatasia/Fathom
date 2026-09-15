@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlencode, urlparse
 
 import certifi
@@ -21,6 +21,9 @@ from fathom.adapters.storage.database import (
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
+
+if TYPE_CHECKING:
+    from fathom.application.semantic_extraction import SemanticExtractionService
 
 
 class KnowledgeBaseInput(BaseModel):
@@ -83,8 +86,13 @@ class KnowledgeSearchInput(BaseModel):
 class KnowledgeService:
     """Lightweight internal retrieval and a generic external knowledge adapter."""
 
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        semantic_extraction: SemanticExtractionService | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._semantic_extraction = semantic_extraction
 
     def list_bases(self) -> list[dict[str, Any]]:
         with self._session_factory() as session:
@@ -195,11 +203,22 @@ class KnowledgeService:
                     )
                 )
             session.commit()
-            return {
+            result = {
                 **self._serialize_document(record),
                 "chunk_count": len(chunks),
                 "deduplicated": False,
             }
+        if self._semantic_extraction is not None:
+            result["semantic_extraction"] = (
+                self._semantic_extraction.extract_knowledge_document(
+                    document_id=document_id,
+                    knowledge_base_key=knowledge_base_key,
+                    title=payload.title,
+                    content=normalized,
+                    metadata=payload.metadata,
+                )
+            )
+        return result
 
     def delete_document(self, knowledge_base_key: str, document_id: str) -> None:
         with self._session_factory() as session:
@@ -325,7 +344,7 @@ class KnowledgeService:
             header_name = str(configuration.get("auth_header", "Authorization"))
             prefix = str(configuration.get("auth_prefix", "Bearer "))
             headers[header_name] = f"{prefix}{secret}"
-        if adapter == "dify":
+        if adapter == "dataset":
             body: dict[str, Any] = {
                 "knowledge_id": configuration.get("knowledge_id", record.key),
                 "query": query,
@@ -357,7 +376,7 @@ class KnowledgeService:
         if len(raw) > 5_000_000:
             raise ValueError("外接知识库响应超过 5 MB 限制")
         payload = json.loads(raw.decode("utf-8"))
-        default_items_path = "records" if adapter == "dify" else "items"
+        default_items_path = "records" if adapter == "dataset" else "items"
         items_path = str(configuration.get("items_path", default_items_path))
         items = self._resolve_path(payload, items_path)
         if not isinstance(items, list):
